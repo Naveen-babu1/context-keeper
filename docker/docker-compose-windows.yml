@@ -1,63 +1,58 @@
-version: '3.9'
-
+# Save as docker-compose-windows.yml
 services:
-  # Vector Database
   qdrant:
     image: qdrant/qdrant:latest
     container_name: context-keeper-qdrant
     ports:
       - "6333:6333"
-      - "6334:6334"  # gRPC port
+      - "6334:6334"
     volumes:
-      - ./qdrant_data:/qdrant/storage
+      # Use named volumes instead of bind mounts
+      - qdrant_storage:/qdrant/storage
     environment:
       - QDRANT__LOG_LEVEL=INFO
-      - QDRANT__SERVICE__HTTP_PORT=6333
     restart: unless-stopped
 
-  # Graph Database
   neo4j:
     image: neo4j:5-community
     container_name: context-keeper-neo4j
     ports:
-      - "7474:7474"  # HTTP
-      - "7687:7687"  # Bolt
+      - "7474:7474"
+      - "7687:7687"
     volumes:
-      - ./neo4j_data:/data
-      - ./neo4j_logs:/logs
+      - neo4j_data:/data
+      - neo4j_logs:/logs
     environment:
       - NEO4J_AUTH=neo4j/contextkeeper2024
-      - NEO4J_PLUGINS=["apoc", "graph-data-science"]
-      - NEO4J_dbms_memory_pagecache_size=1G
-      - NEO4J_dbms_memory_heap_max__size=1G
+      - NEO4J_PLUGINS=["apoc"]
     restart: unless-stopped
 
-  # Cache & Queue
   redis:
     image: redis:7-alpine
     container_name: context-keeper-redis
     ports:
       - "6379:6379"
     volumes:
-      - ./redis_data:/data
+      - redis_data:/data
     command: redis-server --appendonly yes
     restart: unless-stopped
 
-  # Local LLM (Optional)
   ollama:
     image: ollama/ollama:latest
     container_name: context-keeper-ollama
     ports:
       - "11434:11434"
     volumes:
-      - ./ollama_models:/root/.ollama
-    environment:
-      - OLLAMA_KEEP_ALIVE=24h
+      - ollama_data:/root/.ollama
     restart: unless-stopped
-    deploy:
-      resources:
-        limits:
-          memory: 8G
+
+# Define named volumes (Docker manages these)
+volumes:
+  qdrant_storage:
+  neo4j_data:
+  neo4j_logs:
+  redis_data:
+  ollama_data:
 
 networks:
   default:

@@ -388,10 +388,11 @@ if __name__ == "__main__":
     print("  - Redis (Cache): http://localhost:6379")
     print("\n" + "="*60 + "\n")
     
+    # FIX: Change this line
     uvicorn.run(
-        app,
+        app,  # Use app directly, not "app.main:app"
         host="0.0.0.0",
         port=8000,
-        reload=True,
         log_level="info"
+        # Remove reload=True
     )
