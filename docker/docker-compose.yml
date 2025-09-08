@@ -1,0 +1,64 @@
+version: '3.9'
+
+services:
+  # Vector Database
+  qdrant:
+    image: qdrant/qdrant:latest
+    container_name: context-keeper-qdrant
+    ports:
+      - "6333:6333"
+      - "6334:6334"  # gRPC port
+    volumes:
+      - ./qdrant_data:/qdrant/storage
+    environment:
+      - QDRANT__LOG_LEVEL=INFO
+      - QDRANT__SERVICE__HTTP_PORT=6333
+    restart: unless-stopped
+
+  # Graph Database
+  neo4j:
+    image: neo4j:5-community
+    container_name: context-keeper-neo4j
+    ports:
+      - "7474:7474"  # HTTP
+      - "7687:7687"  # Bolt
+    volumes:
+      - ./neo4j_data:/data
+      - ./neo4j_logs:/logs
+    environment:
+      - NEO4J_AUTH=neo4j/contextkeeper2024
+      - NEO4J_PLUGINS=["apoc", "graph-data-science"]
+      - NEO4J_dbms_memory_pagecache_size=1G
+      - NEO4J_dbms_memory_heap_max__size=1G
+    restart: unless-stopped
+
+  # Cache & Queue
+  redis:
+    image: redis:7-alpine
+    container_name: context-keeper-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - ./redis_data:/data
+    command: redis-server --appendonly yes
+    restart: unless-stopped
+
+  # Local LLM (Optional)
+  ollama:
+    image: ollama/ollama:latest
+    container_name: context-keeper-ollama
+    ports:
+      - "11434:11434"
+    volumes:
+      - ./ollama_models:/root/.ollama
+    environment:
+      - OLLAMA_KEEP_ALIVE=24h
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 8G
+
+networks:
+  default:
+    name: context-keeper-network

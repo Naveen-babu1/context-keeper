@@ -1,0 +1,72 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+.venv
+*.egg-info/
+dist/
+build/
+
+# Virtual Environment
+backend/venv/
+backend/.venv/
+
+# Environment files
+.env
+*.env
+.env.local
+.env.*.local
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Databases
+*.db
+*.sqlite
+*.sqlite3
+data/
+
+# Docker volumes
+docker/qdrant_data/
+docker/neo4j_data/
+docker/redis_data/
+docker/ollama_models/
+docker/*_data/
+
+# Logs
+*.log
+logs/
+
+# Model files
+*.gguf
+*.bin
+*.onnx
+models/
+
+# Temporary files
+tmp/
+temp/
+.cache/
+
+# OS
+Thumbs.db
+.DS_Store
+
+# Test coverage
+htmlcov/
+.coverage
+.pytest_cache/
+
+# Node (for future frontend)
+node_modules/
+.next/
+out/
