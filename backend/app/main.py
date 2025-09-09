@@ -303,7 +303,7 @@ Answer:"""
                 "content": event.get("message", event.get("description", "")),
                 "timestamp": event.get("timestamp", ""),
                 "author": event.get("author", ""),
-                "commit": event.get("commit_hash", "")[:8] if "commit_hash" in event else ""
+                "commit": event.get("commit_hash", "")[:8]
             })
         
         return QueryResponse(
