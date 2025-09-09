@@ -23,38 +23,53 @@
 
         .container {
             width: 100%;
-            max-width: 900px;
+            max-width: 1100px;
             background: rgba(255, 255, 255, 0.95);
             border-radius: 20px;
             box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
             overflow: hidden;
             display: flex;
             flex-direction: column;
-            height: 85vh;
+            height: 90vh;
             backdrop-filter: blur(10px);
         }
 
         .header {
             background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
             color: white;
-            padding: 25px;
-            text-align: center;
+            padding: 20px 25px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
             border-bottom: 1px solid rgba(255, 255, 255, 0.1);
         }
 
         .header h1 {
-            font-size: 28px;
+            font-size: 24px;
             font-weight: 600;
-            margin-bottom: 8px;
             display: flex;
             align-items: center;
-            justify-content: center;
             gap: 10px;
         }
 
-        .header .subtitle {
-            opacity: 0.9;
+        .header-actions {
+            display: flex;
+            gap: 10px;
+        }
+
+        .header-button {
+            background: rgba(255, 255, 255, 0.2);
+            border: 1px solid rgba(255, 255, 255, 0.3);
+            color: white;
+            padding: 8px 16px;
+            border-radius: 8px;
+            cursor: pointer;
+            transition: all 0.3s;
             font-size: 14px;
+        }
+
+        .header-button:hover {
+            background: rgba(255, 255, 255, 0.3);
         }
 
         .stats-bar {
@@ -67,6 +82,12 @@
 
         .stat {
             text-align: center;
+            cursor: pointer;
+            transition: transform 0.3s;
+        }
+
+        .stat:hover {
+            transform: scale(1.05);
         }
 
         .stat-value {
@@ -81,6 +102,64 @@
             margin-top: 4px;
         }
 
+        .main-content {
+            flex: 1;
+            display: flex;
+            overflow: hidden;
+        }
+
+        .sidebar {
+            width: 280px;
+            background: #f8f9fa;
+            border-right: 1px solid #e0e0e0;
+            padding: 20px;
+            overflow-y: auto;
+            display: none;
+        }
+
+        .sidebar.active {
+            display: block;
+        }
+
+        .sidebar h3 {
+            font-size: 14px;
+            text-transform: uppercase;
+            color: #666;
+            margin-bottom: 15px;
+            font-weight: 600;
+        }
+
+        .repo-list {
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+        }
+
+        .repo-item {
+            background: white;
+            padding: 12px;
+            border-radius: 8px;
+            border: 1px solid #e0e0e0;
+            cursor: pointer;
+            transition: all 0.3s;
+        }
+
+        .repo-item:hover {
+            border-color: #667eea;
+            box-shadow: 0 2px 8px rgba(102, 126, 234, 0.1);
+        }
+
+        .repo-name {
+            font-weight: 600;
+            color: #333;
+            margin-bottom: 4px;
+        }
+
+        .repo-stats {
+            font-size: 12px;
+            color: #666;
+        }
+
         .chat-container {
             flex: 1;
             overflow-y: auto;
@@ -88,7 +167,64 @@
             display: flex;
             flex-direction: column;
             gap: 20px;
-            background: linear-gradient(to bottom, #f8f9fa, #ffffff);
+            background: linear-gradient(to bottom, #ffffff, #f8f9fa);
+        }
+
+        .ingestion-panel {
+            background: white;
+            border-radius: 12px;
+            padding: 20px;
+            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+            margin-bottom: 20px;
+            display: none;
+        }
+
+        .ingestion-panel.active {
+            display: block;
+        }
+
+        .ingestion-form {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 15px;
+        }
+
+        .ingestion-input {
+            flex: 1;
+            padding: 10px;
+            border: 2px solid #e0e0e0;
+            border-radius: 8px;
+            font-size: 14px;
+        }
+
+        .ingestion-button {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 8px;
+            cursor: pointer;
+            font-weight: 600;
+            transition: all 0.3s;
+        }
+
+        .ingestion-button:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 5px 15px rgba(102, 126, 234, 0.3);
+        }
+
+        .progress-bar {
+            background: #e0e0e0;
+            height: 8px;
+            border-radius: 4px;
+            overflow: hidden;
+            margin-top: 10px;
+        }
+
+        .progress-fill {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            height: 100%;
+            transition: width 0.3s;
         }
 
         .message {
@@ -164,16 +300,6 @@
             font-weight: bold;
         }
 
-        .source-card .message {
-            color: #333;
-            margin: 8px 0;
-        }
-
-        .source-card .author {
-            color: #666;
-            font-size: 12px;
-        }
-
         .confidence-badge {
             display: inline-block;
             padding: 4px 12px;
@@ -186,16 +312,6 @@
         .confidence-high {
             background: #d4edda;
             color: #155724;
-        }
-
-        .confidence-medium {
-            background: #fff3cd;
-            color: #856404;
-        }
-
-        .confidence-low {
-            background: #f8d7da;
-            color: #721c24;
         }
 
         .input-container {
@@ -218,7 +334,6 @@
             font-size: 15px;
             outline: none;
             transition: all 0.3s;
-            font-family: inherit;
         }
 
         .input-field:focus {
@@ -236,17 +351,6 @@
             font-weight: 600;
             cursor: pointer;
             transition: all 0.3s;
-        }
-
-        .send-button:hover {
-            transform: translateY(-2px);
-            box-shadow: 0 5px 15px rgba(102, 126, 234, 0.3);
-        }
-
-        .send-button:disabled {
-            opacity: 0.5;
-            cursor: not-allowed;
-            transform: none;
         }
 
         .suggestions {
@@ -270,7 +374,6 @@
         .suggestion-chip:hover {
             background: #667eea;
             color: white;
-            transform: translateY(-2px);
         }
 
         .loading {
@@ -302,66 +405,109 @@
             }
         }
 
-        .welcome-screen {
-            text-align: center;
-            padding: 60px 20px;
-            color: #666;
+        .modal {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0, 0, 0, 0.5);
+            align-items: center;
+            justify-content: center;
+            z-index: 1000;
         }
 
-        .welcome-screen h2 {
-            color: #667eea;
-            margin-bottom: 20px;
-            font-size: 32px;
+        .modal.active {
+            display: flex;
         }
 
-        .welcome-screen p {
-            margin-bottom: 30px;
-            font-size: 16px;
-            line-height: 1.6;
-        }
-
-        .feature-grid {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-            gap: 20px;
-            margin-top: 40px;
-        }
-
-        .feature-card {
-            padding: 20px;
+        .modal-content {
             background: white;
             border-radius: 12px;
-            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+            padding: 30px;
+            max-width: 500px;
+            width: 90%;
+            max-height: 80vh;
+            overflow-y: auto;
         }
 
-        .feature-icon {
-            font-size: 32px;
-            margin-bottom: 12px;
-        }
-
-        .feature-title {
+        .modal-header {
+            font-size: 20px;
             font-weight: 600;
+            margin-bottom: 20px;
             color: #333;
+        }
+
+        .timeline-view {
+            display: none;
+            padding: 20px;
+            overflow-y: auto;
+        }
+
+        .timeline-view.active {
+            display: block;
+        }
+
+        .timeline-item {
+            background: white;
+            padding: 15px;
+            border-radius: 8px;
+            margin-bottom: 10px;
+            border-left: 3px solid #667eea;
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.05);
+        }
+
+        .timeline-item-header {
+            display: flex;
+            justify-content: space-between;
             margin-bottom: 8px;
         }
 
-        .feature-desc {
-            font-size: 14px;
+        .timeline-commit {
+            font-family: monospace;
+            color: #667eea;
+            font-weight: bold;
+        }
+
+        .timeline-date {
             color: #666;
+            font-size: 12px;
+        }
+
+        .timeline-message {
+            color: #333;
+            margin-bottom: 5px;
+        }
+
+        .timeline-author {
+            color: #666;
+            font-size: 12px;
         }
     </style>
 </head>
 <body>
     <div class="container">
         <div class="header">
-            <h1>
-                🧠 Context Keeper
-            </h1>
-            <div class="subtitle">AI Memory Layer for Your Development History</div>
+            <h1>🧠 Context Keeper</h1>
+            <div class="header-actions">
+                <button class="header-button" onclick="toggleIngestion()">
+                    📥 Ingest Repository
+                </button>
+                <button class="header-button" onclick="toggleSidebar()">
+                    📊 Repositories
+                </button>
+                <button class="header-button" onclick="toggleTimeline()">
+                    📅 Timeline
+                </button>
+                <button class="header-button" onclick="refreshStats()">
+                    🔄 Refresh
+                </button>
+            </div>
         </div>
         
         <div class="stats-bar">
-            <div class="stat">
+            <div class="stat" onclick="showStatsModal()">
                 <div class="stat-value" id="totalEvents">0</div>
                 <div class="stat-label">Events Indexed</div>
             </div>
@@ -373,34 +519,57 @@
                 <div class="stat-value" id="queryCount">0</div>
                 <div class="stat-label">Queries Made</div>
             </div>
+            <div class="stat">
+                <div class="stat-value" id="repoCount">0</div>
+                <div class="stat-label">Repositories</div>
+            </div>
         </div>
         
-        <div class="chat-container" id="chatContainer">
-            <div class="welcome-screen" id="welcomeScreen">
-                <h2>Welcome to Context Keeper</h2>
-                <p>Ask me anything about your codebase history. I have semantic understanding of all your commits, changes, and development patterns.</p>
+        <div class="main-content">
+            <div class="sidebar" id="sidebar">
+                <h3>Indexed Repositories</h3>
+                <div class="repo-list" id="repoList">
+                    <!-- Repos will be loaded here -->
+                </div>
+            </div>
+            
+            <div style="flex: 1; display: flex; flex-direction: column;">
+                <div class="ingestion-panel" id="ingestionPanel">
+                    <h3 style="margin-bottom: 15px;">📥 Ingest Git Repository</h3>
+                    <div class="ingestion-form">
+                        <input 
+                            type="text" 
+                            class="ingestion-input" 
+                            id="repoPath" 
+                            placeholder="Enter repository path (e.g., /d/projects/sidekick-ai/sidekick-ai)"
+                        >
+                        <input 
+                            type="number" 
+                            class="ingestion-input" 
+                            id="commitCount" 
+                            placeholder="Commits"
+                            value="100"
+                            style="width: 100px;"
+                        >
+                        <button class="ingestion-button" onclick="startIngestion()">
+                            Start Ingestion
+                        </button>
+                    </div>
+                    <div id="ingestionStatus"></div>
+                    <div class="progress-bar" id="progressBar" style="display: none;">
+                        <div class="progress-fill" id="progressFill" style="width: 0%"></div>
+                    </div>
+                </div>
                 
-                <div class="feature-grid">
-                    <div class="feature-card">
-                        <div class="feature-icon">🔍</div>
-                        <div class="feature-title">Semantic Search</div>
-                        <div class="feature-desc">Find commits by meaning, not just keywords</div>
+                <div class="timeline-view" id="timelineView">
+                    <h3 style="margin-bottom: 20px;">📅 Recent Activity Timeline</h3>
+                    <div id="timelineContent">
+                        <!-- Timeline items will be loaded here -->
                     </div>
-                    <div class="feature-card">
-                        <div class="feature-icon">⚡</div>
-                        <div class="feature-title">Instant Results</div>
-                        <div class="feature-desc">Vector search delivers answers in milliseconds</div>
-                    </div>
-                    <div class="feature-card">
-                        <div class="feature-icon">🎯</div>
-                        <div class="feature-title">High Accuracy</div>
-                        <div class="feature-desc">85% confidence in query understanding</div>
-                    </div>
-                    <div class="feature-card">
-                        <div class="feature-icon">📊</div>
-                        <div class="feature-title">Full History</div>
-                        <div class="feature-desc">Every commit indexed and searchable</div>
-                    </div>
+                </div>
+                
+                <div class="chat-container" id="chatContainer">
+                    <!-- Chat messages will appear here -->
                 </div>
             </div>
         </div>
@@ -410,7 +579,7 @@
                 <div class="suggestion-chip" onclick="askQuestion('What are the recent version updates?')">Recent versions</div>
                 <div class="suggestion-chip" onclick="askQuestion('Show me bug fixes')">Bug fixes</div>
                 <div class="suggestion-chip" onclick="askQuestion('What refactoring was done?')">Refactoring</div>
-                <div class="suggestion-chip" onclick="askQuestion('Who contributed most?')">Top contributors</div>
+                <div class="suggestion-chip" onclick="loadTimeline()">Show Timeline</div>
             </div>
             <div class="input-wrapper">
                 <input 
@@ -429,18 +598,174 @@
 
     <script>
         let queryCount = 0;
+        let currentView = 'chat';
         const API_URL = 'http://localhost:8000';
         
-        // Load stats on page load
+        // Initialize on load
+        window.onload = function() {
+            loadStats();
+            loadRepos();
+            setInterval(checkIngestionStatus, 2000);
+            
+            // Add welcome message
+            addMessage('ai', 'Welcome to Context Keeper! I can help you search through your codebase history. Start by ingesting a repository using the 📥 button above, or ask me about any code you\'ve already indexed.');
+        };
+        
         async function loadStats() {
             try {
                 const response = await fetch(`${API_URL}/api/stats`);
                 const data = await response.json();
                 document.getElementById('totalEvents').textContent = data.events.in_memory || 0;
                 document.getElementById('vectorCount').textContent = data.events.in_qdrant || 0;
+                
+                // Load repo count
+                const repoResponse = await fetch(`${API_URL}/api/repos`);
+                const repos = await repoResponse.json();
+                document.getElementById('repoCount').textContent = Object.keys(repos).length;
             } catch (error) {
                 console.error('Failed to load stats:', error);
             }
+        }
+        
+        async function loadRepos() {
+            try {
+                const response = await fetch(`${API_URL}/api/repos`);
+                const repos = await response.json();
+                const repoList = document.getElementById('repoList');
+                
+                if (Object.keys(repos).length === 0) {
+                    repoList.innerHTML = '<p style="color: #666; font-size: 14px;">No repositories indexed yet. Click "Ingest Repository" to get started.</p>';
+                } else {
+                    repoList.innerHTML = Object.entries(repos).map(([name, data]) => `
+                        <div class="repo-item" onclick="filterByRepo('${name}')">
+                            <div class="repo-name">${name}</div>
+                            <div class="repo-stats">
+                                ${data.commit_count} commits • ${data.authors.length} authors
+                            </div>
+                        </div>
+                    `).join('');
+                }
+            } catch (error) {
+                console.error('Failed to load repos:', error);
+            }
+        }
+        
+        function toggleIngestion() {
+            const panel = document.getElementById('ingestionPanel');
+            panel.classList.toggle('active');
+            if (panel.classList.contains('active')) {
+                document.getElementById('chatContainer').style.display = 'none';
+                document.getElementById('timelineView').style.display = 'none';
+            } else {
+                document.getElementById('chatContainer').style.display = 'flex';
+            }
+        }
+        
+        function toggleSidebar() {
+            document.getElementById('sidebar').classList.toggle('active');
+        }
+        
+        function toggleTimeline() {
+            const timeline = document.getElementById('timelineView');
+            const chat = document.getElementById('chatContainer');
+            const ingestion = document.getElementById('ingestionPanel');
+            
+            if (timeline.classList.contains('active')) {
+                timeline.classList.remove('active');
+                chat.style.display = 'flex';
+            } else {
+                timeline.classList.add('active');
+                chat.style.display = 'none';
+                ingestion.classList.remove('active');
+                loadTimeline();
+            }
+        }
+        
+        async function loadTimeline() {
+            try {
+                const response = await fetch(`${API_URL}/api/timeline?limit=20`);
+                const data = await response.json();
+                const timelineContent = document.getElementById('timelineContent');
+                
+                if (data.timeline.events.length === 0) {
+                    timelineContent.innerHTML = '<p style="color: #666;">No events yet. Ingest a repository to see timeline.</p>';
+                } else {
+                    timelineContent.innerHTML = data.timeline.events.map(event => `
+                        <div class="timeline-item">
+                            <div class="timeline-item-header">
+                                <span class="timeline-commit">${event.id.substring(0, 8)}</span>
+                                <span class="timeline-date">${formatDate(event.timestamp)}</span>
+                            </div>
+                            <div class="timeline-message">${escapeHtml(event.title || event.message || 'No message')}</div>
+                            <div class="timeline-author">${escapeHtml(event.author || 'Unknown')}</div>
+                        </div>
+                    `).join('');
+                }
+            } catch (error) {
+                console.error('Failed to load timeline:', error);
+            }
+        }
+        
+        async function startIngestion() {
+            const repoPath = document.getElementById('repoPath').value;
+            const commitCount = document.getElementById('commitCount').value || 100;
+            
+            if (!repoPath) {
+                alert('Please enter a repository path');
+                return;
+            }
+            
+            try {
+                const response = await fetch(`${API_URL}/api/ingest/start`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        repo_path: repoPath,
+                        max_commits: parseInt(commitCount)
+                    })
+                });
+                
+                if (response.ok) {
+                    document.getElementById('ingestionStatus').innerHTML = 
+                        '<p style="color: green;">✅ Ingestion started! Processing commits...</p>';
+                    document.getElementById('progressBar').style.display = 'block';
+                } else {
+                    const error = await response.json();
+                    document.getElementById('ingestionStatus').innerHTML = 
+                        `<p style="color: red;">❌ Error: ${error.detail}</p>`;
+                }
+            } catch (error) {
+                document.getElementById('ingestionStatus').innerHTML = 
+                    '<p style="color: red;">❌ Failed to start ingestion</p>';
+            }
+        }
+        
+        async function checkIngestionStatus() {
+            try {
+                const response = await fetch(`${API_URL}/api/ingest/status`);
+                const status = await response.json();
+                
+                if (status.is_ingesting) {
+                    const progress = (status.progress / status.total) * 100;
+                    document.getElementById('progressFill').style.width = `${progress}%`;
+                } else if (status.last_ingested) {
+                    document.getElementById('progressBar').style.display = 'none';
+                    loadStats();
+                    loadRepos();
+                }
+            } catch (error) {
+                // Ignore errors during status check
+            }
+        }
+        
+        function refreshStats() {
+            loadStats();
+            loadRepos();
+            addMessage('ai', '🔄 Stats refreshed! ' + 
+                document.getElementById('totalEvents').textContent + ' events indexed, ' +
+                document.getElementById('vectorCount').textContent + ' vectors stored.');
         }
         
         function handleKeyPress(event) {
@@ -460,24 +785,13 @@
             
             if (!query) return;
             
-            // Hide welcome screen on first query
-            const welcomeScreen = document.getElementById('welcomeScreen');
-            if (welcomeScreen) {
-                welcomeScreen.style.display = 'none';
-            }
-            
-            // Update query count
             queryCount++;
             document.getElementById('queryCount').textContent = queryCount;
             
-            // Add user message
             addMessage('user', query);
-            
-            // Clear input and disable button
             input.value = '';
             document.getElementById('sendButton').disabled = true;
             
-            // Show loading
             showLoading();
             
             try {
@@ -491,13 +805,11 @@
                 
                 const data = await response.json();
                 hideLoading();
-                
-                // Add AI response
                 addAIResponse(data);
                 
             } catch (error) {
                 hideLoading();
-                addMessage('ai', 'Sorry, I encountered an error while searching. Please make sure the Context Keeper server is running.');
+                addMessage('ai', 'Sorry, I encountered an error. Please make sure the server is running.');
             } finally {
                 document.getElementById('sendButton').disabled = false;
             }
@@ -579,9 +891,7 @@
         
         function hideLoading() {
             const loading = document.getElementById('loadingIndicator');
-            if (loading) {
-                loading.remove();
-            }
+            if (loading) loading.remove();
         }
         
         function escapeHtml(text) {
@@ -595,12 +905,6 @@
             const date = new Date(timestamp);
             return date.toLocaleDateString() + ' ' + date.toLocaleTimeString();
         }
-        
-        // Load stats when page loads
-        loadStats();
-        
-        // Refresh stats every 30 seconds
-        setInterval(loadStats, 30000);
     </script>
 </body>
 </html>

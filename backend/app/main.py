@@ -27,6 +27,14 @@ import httpx
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
+ingestion_status = {
+    "is_ingesting": False,
+    "current_repo": None,
+    "progress": 0,
+    "total": 0,
+    "last_ingested": None
+}
+
 # Global services
 qdrant_client = None
 embedding_model = None
@@ -129,12 +137,20 @@ async def store_in_qdrant(event: Dict[str, Any], event_id: str):
         text = f"{event.get('message', '')} {event.get('description', '')} {' '.join(event.get('files_changed', []))}"
         embedding = create_embedding(text)
         
-        # Store in Qdrant
+        # Store in Qdrant - use UUID string or convert to proper format
+        import uuid
+        
+        # Generate a UUID if the event_id is just a number
+        if event_id.isdigit():
+            point_id = str(uuid.uuid4())
+        else:
+            point_id = event_id
+            
         qdrant_client.upsert(
             collection_name=events_collection,
             points=[
                 PointStruct(
-                    id=event_id,
+                    id=point_id,  # Use UUID string instead of integer
                     vector=embedding,
                     payload=event
                 )
@@ -192,18 +208,13 @@ async def query_llm(prompt: str) -> str:
 
 # ============= Endpoints =============
 @app.get("/")
-async def root():
-    return {
-        "message": "Context Keeper API",
-        "version": "0.2.0",
-        "status": "running",
-        "docs": "/docs",
-        "services": {
-            "qdrant": qdrant_client is not None,
-            "embeddings": embedding_model is not None
-        }
-    }, FileResponse(os.path.join(static_dir, "index.html"))
-app.mount("/static", StaticFiles(directory=static_dir), name="static")
+async def serve_ui():
+    html_path = os.path.join(static_dir, "index.html")
+    if os.path.exists(html_path):
+        return FileResponse(html_path)
+    else:
+        # Fallback if HTML doesn't exist
+        return {"message": "Context Keeper API", "docs": "/docs"}
 
 @app.get("/health")
 async def health_check():
@@ -233,6 +244,7 @@ async def health_check():
         "events_stored": len(git_events) + len(context_events)
     }
 
+
 @app.post("/api/ingest/git")
 async def ingest_git_event(event: Dict[str, Any], background_tasks: BackgroundTasks):
     """Ingest git event and store in vector database"""
@@ -242,8 +254,10 @@ async def ingest_git_event(event: Dict[str, Any], background_tasks: BackgroundTa
         # Add metadata
         event["timestamp"] = event.get("timestamp", datetime.now().isoformat())
         event["type"] = "git_commit"
-        event_id = str(next_id)
-        next_id += 1
+        
+        # Use UUID instead of integer
+        import uuid
+        event_id = str(uuid.uuid4())
         
         # Store in memory
         git_events.append(event)
@@ -363,6 +377,97 @@ async def get_timeline(days: int = 7, limit: int = 50):
             "events": all_events,
             "total": len(all_events),
             "source": "qdrant" if qdrant_client else "memory"
+        }
+    }
+
+@app.post("/api/ingest/start")
+async def start_ingestion(request: dict):
+    """Start ingesting a repository"""
+    repo_path = request.get("repo_path")
+    max_commits = request.get("max_commits", 100)
+    
+    if not repo_path:
+        raise HTTPException(status_code=400, detail="repo_path required")
+    
+    # Update status
+    ingestion_status["is_ingesting"] = True
+    ingestion_status["current_repo"] = repo_path
+    ingestion_status["progress"] = 0
+    ingestion_status["total"] = max_commits
+    
+    # Run git collector in background
+    import subprocess
+    import threading
+    import os
+    
+    def run_collector():
+        try:
+            # Fix the path to git_collector.py
+            collector_path = os.path.join(
+                os.path.dirname(os.path.dirname(__file__)),  # Go up from app to backend
+                "collectors", "git", "git_collector.py"
+            )
+            
+            # If collector doesn't exist in expected location, try alternative
+            if not os.path.exists(collector_path):
+                collector_path = "D:/projects/context-keeper/collectors/git/git_collector.py"
+            
+            subprocess.run([
+                "python", collector_path,
+                "--repo", repo_path,
+                "--history", str(max_commits),
+                "--api-url", "http://localhost:8000"
+            ])
+            
+            ingestion_status["is_ingesting"] = False
+            ingestion_status["last_ingested"] = datetime.now().isoformat()
+        except Exception as e:
+            ingestion_status["is_ingesting"] = False
+            ingestion_status["error"] = str(e)
+            logger.error(f"Ingestion error: {e}")
+    
+    thread = threading.Thread(target=run_collector)
+    thread.start()
+    
+    return {"status": "started", "repo": repo_path}
+
+@app.get("/api/ingest/status")
+async def get_ingestion_status():
+    """Get current ingestion status"""
+    return ingestion_status
+
+@app.get("/api/repos")
+async def get_indexed_repos():
+    """Get list of indexed repositories"""
+    repos = {}
+    for event in git_events:
+        repo = event.get("branch", "unknown")
+        if repo not in repos:
+            repos[repo] = {
+                "commit_count": 0,
+                "last_commit": None,
+                "authors": set()
+            }
+        repos[repo]["commit_count"] += 1
+        repos[repo]["last_commit"] = event.get("timestamp")
+        repos[repo]["authors"].add(event.get("author", ""))
+    
+    # Convert sets to lists for JSON serialization
+    for repo in repos:
+        repos[repo]["authors"] = list(repos[repo]["authors"])
+    
+    return repos
+
+@app.get("/api/info")  # Move the API info to a different endpoint
+async def api_info():
+    return {
+        "message": "Context Keeper API",
+        "version": "0.2.0",
+        "status": "running",
+        "docs": "/docs",
+        "services": {
+            "qdrant": qdrant_client is not None,
+            "embeddings": embedding_model is not None
         }
     }
 
