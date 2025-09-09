@@ -6,6 +6,8 @@ from contextlib import asynccontextmanager
 import logging
 from fastapi import FastAPI, HTTPException, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from typing import Optional, List, Dict, Any
 from datetime import datetime, timedelta
@@ -29,6 +31,9 @@ logger = logging.getLogger(__name__)
 qdrant_client = None
 embedding_model = None
 events_collection = "context_events"
+
+static_dir = os.path.join(os.path.dirname(__file__), "static")
+os.makedirs(static_dir, exist_ok=True)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -197,7 +202,8 @@ async def root():
             "qdrant": qdrant_client is not None,
             "embeddings": embedding_model is not None
         }
-    }
+    }, FileResponse(os.path.join(static_dir, "index.html"))
+app.mount("/static", StaticFiles(directory=static_dir), name="static")
 
 @app.get("/health")
 async def health_check():
