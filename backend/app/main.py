@@ -141,20 +141,27 @@ async def store_in_qdrant(event: Dict[str, Any], event_id: str):
         return False
 
 async def search_similar(query: str, limit: int = 10) -> List[Dict[str, Any]]:
-    """Search for similar events using vector similarity"""
     if not qdrant_client or not embedding_model:
         return []
     
     try:
         query_embedding = create_embedding(query)
-        
         results = qdrant_client.search(
             collection_name=events_collection,
             query_vector=query_embedding,
             limit=limit
         )
         
-        return [hit.payload for hit in results]
+        # Remove duplicates based on message content
+        seen = set()
+        unique_results = []
+        for hit in results:
+            msg = hit.payload.get('message', '')
+            if msg not in seen:
+                seen.add(msg)
+                unique_results.append(hit.payload)
+        
+        return unique_results
     except Exception as e:
         logger.error(f"Search failed: {e}")
         return []
@@ -355,23 +362,18 @@ async def get_timeline(days: int = 7, limit: int = 50):
 
 @app.get("/api/stats")
 async def get_statistics():
-    """Get system statistics"""
     stats = {
         "events": {
             "in_memory": len(git_events) + len(context_events),
             "in_qdrant": 0
-        },
-        "services": {
-            "vector_search": qdrant_client is not None,
-            "embeddings": embedding_model is not None,
         }
     }
     
-    # Get Qdrant stats
     if qdrant_client:
         try:
             collection_info = qdrant_client.get_collection(events_collection)
-            stats["events"]["in_qdrant"] = collection_info.vectors_count
+            # Use points_count instead of vectors_count
+            stats["events"]["in_qdrant"] = collection_info.points_count
         except:
             pass
     
