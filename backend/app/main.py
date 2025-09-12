@@ -267,6 +267,33 @@ async def query_llm(prompt: str) -> str:
         logger.warning(f"LLM query failed: {e}")
     return ""
 
+async def check_commit_exists(commit_hash: str) -> bool:
+    """Check if a commit already exists in Qdrant"""
+    if not qdrant_client or not commit_hash:
+        return False
+    
+    try:
+        # Search for exact commit hash in payloads
+        results = qdrant_client.scroll(
+            collection_name=events_collection,
+            scroll_filter={
+                "must": [
+                    {
+                        "key": "commit_hash",
+                        "match": {"value": commit_hash}
+                    }
+                ]
+            },
+            limit=1,
+            with_payload=False,
+            with_vectors=False
+        )[0]
+        
+        return len(results) > 0
+    except Exception as e:
+        logger.debug(f"Error checking commit existence: {e}")
+        return False
+
 # ============= Endpoints =============
 @app.get("/")
 async def serve_ui():
@@ -305,6 +332,50 @@ async def health_check():
         "events_stored": len(git_events) + len(context_events)
     }
 
+@app.post("/api/check/repository")
+async def check_repository_status(request: dict):
+    """Check how many commits from a repository are already indexed"""
+    repo_path = request.get("repo_path")
+    
+    if not repo_path:
+        raise HTTPException(status_code=400, detail="repo_path required")
+    
+    # Get commit hashes from the repository
+    import subprocess
+    try:
+        result = subprocess.run(
+            ["git", "log", "--pretty=format:%H", "-100"],  # Get last 100 commit hashes
+            cwd=repo_path,
+            capture_output=True,
+            text=True,
+            check=True
+        )
+        
+        commit_hashes = result.stdout.strip().split('\n')
+        total_commits = len(commit_hashes)
+        
+        # Check how many already exist
+        existing_count = 0
+        missing_commits = []
+        
+        for commit_hash in commit_hashes:
+            if await check_commit_exists(commit_hash):
+                existing_count += 1
+            else:
+                missing_commits.append(commit_hash[:8])
+        
+        return {
+            "repository": repo_path,
+            "total_commits_checked": total_commits,
+            "already_indexed": existing_count,
+            "missing": total_commits - existing_count,
+            "missing_commits": missing_commits[:10],  # Show first 10 missing
+            "fully_indexed": existing_count == total_commits
+        }
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error checking repository: {e}")
+
 
 @app.post("/api/ingest/git")
 async def ingest_git_event(event: Dict[str, Any], background_tasks: BackgroundTasks):
@@ -312,6 +383,17 @@ async def ingest_git_event(event: Dict[str, Any], background_tasks: BackgroundTa
     global next_id
 
     commit_hash = event.get("commit_hash", "")
+    # Check for duplicate in Qdrant first
+    # Check for duplicate in Qdrant first
+    if commit_hash and await check_commit_exists(commit_hash):
+            logger.info(f"⚠️ Duplicate commit skipped (already in Qdrant): {commit_hash[:8]}")
+            return {
+                "status": "duplicate",
+                "message": "Commit already indexed in vector store",
+                "commit": commit_hash[:8] if commit_hash else "",
+                "source": "qdrant"
+            }
+
     if commit_hash:
         # Check if this commit already exists
         for existing in git_events:
@@ -320,7 +402,8 @@ async def ingest_git_event(event: Dict[str, Any], background_tasks: BackgroundTa
                 return {
                     "status": "duplicate",
                     "message": "Commit already indexed",
-                    "commit": commit_hash[:8] if commit_hash else ""
+                    "commit": commit_hash[:8] if commit_hash else "",
+                    "source": "memory"
                 }
     
     try:
@@ -481,6 +564,50 @@ async def cleanup_bad_entries():
         "message": f"Removed {removed_count} entries without commit hashes"
     }
 
+@app.get("/api/commits/indexed")
+async def get_indexed_commits():
+    """Get list of all indexed commit hashes"""
+    indexed = set()
+    
+    # Get from Qdrant
+    if qdrant_client:
+        try:
+            offset = None
+            while True:
+                results = qdrant_client.scroll(
+                    collection_name=events_collection,
+                    limit=100,
+                    offset=offset,
+                    with_payload=True,
+                    with_vectors=False
+                )
+                
+                points, next_offset = results
+                
+                for point in points:
+                    commit_hash = point.payload.get("commit_hash")
+                    if commit_hash:
+                        indexed.add(commit_hash)
+                
+                if next_offset is None:
+                    break
+                offset = next_offset
+                
+        except Exception as e:
+            logger.error(f"Error getting indexed commits: {e}")
+    
+    # Also add from memory
+    for event in git_events:
+        commit_hash = event.get("commit_hash")
+        if commit_hash:
+            indexed.add(commit_hash)
+    
+    return {
+        "total_indexed": len(indexed),
+        "commit_hashes": list(indexed)[:100],  # Return first 100
+        "source": "qdrant+memory" if qdrant_client else "memory"
+    }
+
 @app.get("/api/debug/commits")
 async def debug_commits():
     """Debug endpoint to see what's in the database"""
@@ -569,13 +696,21 @@ async def get_timeline(days: int = 7, limit: int = 50):
 async def start_ingestion(request: dict):
     """Start ingesting a repository"""
     repo_path = request.get("repo_path")
+    force = request.get("force", False)
     # max_commits = request.get("max_commits", 100)
     
     if not repo_path:
         raise HTTPException(status_code=400, detail="repo_path required")
     
-    if repo_path in indexed_repos:
-        return {"status": "already_indexed", "message": f"Repository {repo_path} is already indexed"}
+    # Check repository status first
+    check_result = await check_repository_status({"repo_path": repo_path})
+    
+    if check_result["fully_indexed"] and not force:
+        return {
+            "status": "already_complete",
+            "message": f"Repository {repo_path} is already fully indexed",
+            "stats": check_result
+        }
     
     # Update status
     ingestion_status["is_ingesting"] = True
@@ -604,7 +739,8 @@ async def start_ingestion(request: dict):
                 "python", collector_path,
                 "--repo", repo_path,
                 "--history", "999999",
-                "--api-url", "http://localhost:8000"
+                "--api-url", "http://localhost:8000",
+                "--skip-duplicates"
             ])
             
             ingestion_status["is_ingesting"] = False
@@ -618,7 +754,8 @@ async def start_ingestion(request: dict):
     thread.start()
     indexed_repos.add(repo_path)
     
-    return {"status": "started", "repo": repo_path}
+    return {"status": "started", "repo": repo_path, "to_ingest": check_result["missing"],
+        "already_indexed": check_result["already_indexed"]}
 
 @app.get("/api/ingest/status")
 async def get_ingestion_status():
