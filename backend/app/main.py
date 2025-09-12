@@ -39,6 +39,7 @@ ingestion_status = {
 qdrant_client = None
 embedding_model = None
 events_collection = "context_events"
+indexed_repos = set()
 
 static_dir = os.path.join(os.path.dirname(__file__), "static")
 os.makedirs(static_dir, exist_ok=True)
@@ -186,6 +187,66 @@ async def search_similar(query: str, limit: int = 10) -> List[Dict[str, Any]]:
     except Exception as e:
         logger.error(f"Search failed: {e}")
         return []
+    
+async def generate_intelligent_answer(query: str, events: List[Dict]) -> str:
+    """Generate intelligent summary of events"""
+    if not events:
+        return "No relevant events found."
+    
+    query_lower = query.lower()
+    
+    # Special handling for list/show all queries
+    if any(word in query_lower for word in ["all", "list all", "show all", "every"]):
+        commit_list = []
+        for e in events[:20]:  # Show first 20
+            commit_hash = e.get('commit_hash', '')
+            msg = e.get('message', 'No message')
+            author = e.get('author', 'Unknown')
+            commit_str = f"• {msg} [{commit_hash[:8] if commit_hash else 'no-hash'}] by {author}"
+            commit_list.append(commit_str)
+        
+        return f"Found {len(events)} commits. Here are the most relevant:\n\n" + "\n".join(commit_list)
+    
+    # Create context from events
+    context = "\n".join([
+        f"- {e.get('message', '')} (commit: {e.get('commit_hash', '')[:8] if e.get('commit_hash') else 'no-hash'})"
+        for e in events[:10]
+    ])
+    
+    # Try to use LLM if available
+    if await query_llm("test"):
+        prompt = f"""Based on these commits, provide a helpful summary for: {query}
+        
+Commits:
+{context}
+
+Summary:"""
+        response = await query_llm(prompt)
+        if response:
+            return response
+    
+    # Intelligent fallback based on query type
+    if "version" in query_lower:
+        versions = [e for e in events if 'version' in e.get('message', '').lower()]
+        if versions:
+            version_list = [v.get('message', '') for v in versions[:5]]
+            return f"Found {len(versions)} version updates:\n" + "\n".join(f"• {v}" for v in version_list)
+    
+    elif "fix" in query_lower or "bug" in query_lower:
+        fixes = [e for e in events if any(word in e.get('message', '').lower() for word in ['fix', 'bug', 'patch'])]
+        if fixes:
+            return f"Found {len(fixes)} bug fixes/patches:\n" + "\n".join(f"• {f.get('message', '')}" for f in fixes[:5])
+    
+    elif "feature" in query_lower:
+        features = [e for e in events if any(word in e.get('message', '').lower() for word in ['feat', 'add', 'implement'])]
+        if features:
+            return f"Found {len(features)} feature additions:\n" + "\n".join(f"• {f.get('message', '')}" for f in features[:5])
+    
+    # Default response with more detail
+    return f"Found {len(events)} relevant commits for '{query}':\n" + "\n".join(
+        f"• {e.get('message', '')} by {e.get('author', 'Unknown')}" 
+        for e in events[:5]
+    )
 
 async def query_llm(prompt: str) -> str:
     """Query local LLM using Ollama"""
@@ -249,9 +310,22 @@ async def health_check():
 async def ingest_git_event(event: Dict[str, Any], background_tasks: BackgroundTasks):
     """Ingest git event and store in vector database"""
     global next_id
+
+    commit_hash = event.get("commit_hash", "")
+    if commit_hash:
+        # Check if this commit already exists
+        for existing in git_events:
+            if existing.get("commit_hash") == commit_hash:
+                logger.info(f"⚠️ Duplicate commit skipped: {commit_hash[:8]}")
+                return {
+                    "status": "duplicate",
+                    "message": "Commit already indexed",
+                    "commit": commit_hash[:8] if commit_hash else ""
+                }
     
     try:
         # Add metadata
+        event["commit_hash"] = event.get("commit_hash", "")
         event["timestamp"] = event.get("timestamp", datetime.now().isoformat())
         event["type"] = "git_commit"
         
@@ -283,37 +357,34 @@ async def ingest_git_event(event: Dict[str, Any], background_tasks: BackgroundTa
 async def query_context(request: QueryRequest):
     """Query context using vector search and LLM"""
     try:
+        query_lower = request.query.lower()
+        if any(word in query_lower for word in ["all", "list all", "show all", "every"]):
+            request.limit = 100  # Show more when user asks for all
         # Search for similar events
         similar_events = await search_similar(request.query, request.limit)
         
-        # Fallback to simple search if vector search unavailable
-        if not similar_events:
-            for event in git_events[-20:]:
-                if request.query.lower() in str(event).lower():
-                    similar_events.append(event)
-        
         # Generate answer using LLM if available
-        answer = ""
-        if similar_events and await query_llm("test"):
-            context = "\n".join([
-                f"- {e.get('message', e.get('description', ''))}" 
-                for e in similar_events[:5]
-            ])
+        answer = await generate_intelligent_answer(request.query, similar_events)
+#         if similar_events and await query_llm("test"):
+#             context = "\n".join([
+#                 f"- {e.get('message', e.get('description', ''))}" 
+#                 for e in similar_events[:5]
+#             ])
             
-            prompt = f"""Based on the following context, answer this question: {request.query}
+#             prompt = f"""Based on the following context, answer this question: {request.query}
 
-Context:
-{context}
+# Context:
+# {context}
 
-Answer:"""
+# Answer:"""
             
-            llm_response = await query_llm(prompt)
-            if llm_response:
-                answer = llm_response
-            else:
-                answer = f"Found {len(similar_events)} relevant events for: {request.query}"
-        else:
-            answer = f"Found {len(similar_events)} relevant events" if similar_events else "No relevant events found"
+#             llm_response = await query_llm(prompt)
+#             if llm_response:
+#                 answer = llm_response
+#             else:
+#                 answer = f"Found {len(similar_events)} relevant events for: {request.query}"
+#         else:
+#             answer = f"Found {len(similar_events)} relevant events" if similar_events else "No relevant events found"
         
         # Format sources
         sources = []
@@ -336,6 +407,116 @@ Answer:"""
         logger.error(f"Query failed: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
+# Add these endpoints to your main.py
+
+@app.delete("/api/clear")
+async def clear_all_data():
+    """Clear all data (use with caution!)"""
+    global git_events, context_events, indexed_repos
+    
+    # Clear memory
+    git_events.clear()
+    context_events.clear()
+    indexed_repos.clear()
+    
+    # Clear Qdrant
+    if qdrant_client:
+        try:
+            qdrant_client.delete_collection(events_collection)
+            qdrant_client.create_collection(
+                collection_name=events_collection,
+                vectors_config=VectorParams(size=384, distance=Distance.COSINE)
+            )
+            logger.info("✅ Cleared all data from Qdrant")
+            return {"status": "success", "message": "All data cleared"}
+        except Exception as e:
+            logger.error(f"Failed to clear Qdrant: {e}")
+            return {"status": "error", "message": str(e)}
+    
+    return {"status": "success", "message": "Memory cleared (no Qdrant)"}
+
+@app.post("/api/cleanup")
+async def cleanup_bad_entries():
+    """Remove entries without commit hashes"""
+    global git_events
+    
+    removed_count = 0
+    
+    # Clean memory
+    git_events = [e for e in git_events if e.get("commit_hash")]
+    
+    # Clean Qdrant
+    if qdrant_client:
+        try:
+            # Get all points
+            results = qdrant_client.scroll(
+                collection_name=events_collection,
+                limit=1000,
+                with_payload=True,
+                with_vectors=False
+            )[0]
+            
+            # Find points without commit_hash
+            points_to_delete = []
+            for point in results:
+                if not point.payload.get("commit_hash"):
+                    points_to_delete.append(point.id)
+                    removed_count += 1
+            
+            # Delete bad points
+            if points_to_delete:
+                qdrant_client.delete(
+                    collection_name=events_collection,
+                    points_selector=points_to_delete
+                )
+                logger.info(f"✅ Removed {len(points_to_delete)} entries without commit hashes")
+            
+        except Exception as e:
+            logger.error(f"Cleanup failed: {e}")
+            return {"status": "error", "message": str(e)}
+    
+    return {
+        "status": "success",
+        "removed": removed_count,
+        "message": f"Removed {removed_count} entries without commit hashes"
+    }
+
+@app.get("/api/debug/commits")
+async def debug_commits():
+    """Debug endpoint to see what's in the database"""
+    debug_info = {
+        "in_memory": [],
+        "in_qdrant": []
+    }
+    
+    # Check memory
+    for event in git_events[:10]:  # First 10
+        debug_info["in_memory"].append({
+            "commit_hash": event.get("commit_hash", "MISSING"),
+            "message": event.get("message", "")[:50]
+        })
+    
+    # Check Qdrant
+    if qdrant_client:
+        try:
+            results = qdrant_client.scroll(
+                collection_name=events_collection,
+                limit=10,
+                with_payload=True,
+                with_vectors=False
+            )[0]
+            
+            for point in results:
+                debug_info["in_qdrant"].append({
+                    "id": str(point.id),
+                    "commit_hash": point.payload.get("commit_hash", "MISSING"),
+                    "message": point.payload.get("message", "")[:50]
+                })
+        except Exception as e:
+            debug_info["qdrant_error"] = str(e)
+    
+    return debug_info
+
 @app.get("/api/timeline")
 async def get_timeline(days: int = 7, limit: int = 50):
     """Get timeline of all events"""
@@ -347,16 +528,20 @@ async def get_timeline(days: int = 7, limit: int = 50):
             # Scroll through all points
             result = qdrant_client.scroll(
                 collection_name=events_collection,
-                limit=limit
-            )
-            for point in result[0]:
+                limit=1000,
+                with_payload=True,
+                with_vector=False
+            )[0]
+            for point in result:  # Fix: result is already the list
                 event = point.payload
+                commit_hash = event.get("commit_hash", "")
                 all_events.append({
                     "id": str(point.id),
                     "timestamp": event.get("timestamp", ""),
                     "type": event.get("type", ""),
                     "title": event.get("message", "")[:100] if "message" in event else event.get("title", ""),
                     "author": event.get("author", ""),
+                    "commit": commit_hash[:8] if commit_hash else ""
                 })
         except Exception as e:
             logger.error(f"Failed to get timeline from Qdrant: {e}")
@@ -384,16 +569,19 @@ async def get_timeline(days: int = 7, limit: int = 50):
 async def start_ingestion(request: dict):
     """Start ingesting a repository"""
     repo_path = request.get("repo_path")
-    max_commits = request.get("max_commits", 100)
+    # max_commits = request.get("max_commits", 100)
     
     if not repo_path:
         raise HTTPException(status_code=400, detail="repo_path required")
+    
+    if repo_path in indexed_repos:
+        return {"status": "already_indexed", "message": f"Repository {repo_path} is already indexed"}
     
     # Update status
     ingestion_status["is_ingesting"] = True
     ingestion_status["current_repo"] = repo_path
     ingestion_status["progress"] = 0
-    ingestion_status["total"] = max_commits
+    ingestion_status["total"] = 999999
     
     # Run git collector in background
     import subprocess
@@ -415,7 +603,7 @@ async def start_ingestion(request: dict):
             subprocess.run([
                 "python", collector_path,
                 "--repo", repo_path,
-                "--history", str(max_commits),
+                "--history", "999999",
                 "--api-url", "http://localhost:8000"
             ])
             
@@ -428,6 +616,7 @@ async def start_ingestion(request: dict):
     
     thread = threading.Thread(target=run_collector)
     thread.start()
+    indexed_repos.add(repo_path)
     
     return {"status": "started", "repo": repo_path}
 

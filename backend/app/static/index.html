@@ -541,16 +541,16 @@
                             type="text" 
                             class="ingestion-input" 
                             id="repoPath" 
-                            placeholder="Enter repository path (e.g., /d/projects/sidekick-ai/sidekick-ai)"
+                            placeholder="Enter repository path (e.g., /projects/sidekick-ai/sidekick-ai)"
                         >
-                        <input 
+                        <!-- <input 
                             type="number" 
                             class="ingestion-input" 
                             id="commitCount" 
                             placeholder="Commits"
                             value="100"
                             style="width: 100px;"
-                        >
+                        > -->
                         <button class="ingestion-button" onclick="startIngestion()">
                             Start Ingestion
                         </button>
@@ -708,12 +708,19 @@
         
         async function startIngestion() {
             const repoPath = document.getElementById('repoPath').value;
-            const commitCount = document.getElementById('commitCount').value || 100;
+            // const commitCount = document.getElementById('commitCount').value || 100;
             
             if (!repoPath) {
                 alert('Please enter a repository path');
                 return;
             }
+
+            // Check if already indexed
+    const repos = await fetch(`${API_URL}/api/repos`).then(r => r.json());
+    if (repos[repoPath]) {
+        alert('This repository is already indexed!');
+        return;
+    }
             
             try {
                 const response = await fetch(`${API_URL}/api/ingest/start`, {
@@ -723,7 +730,7 @@
                     },
                     body: JSON.stringify({
                         repo_path: repoPath,
-                        max_commits: parseInt(commitCount)
+                        max_commits: 999999
                     })
                 });
                 

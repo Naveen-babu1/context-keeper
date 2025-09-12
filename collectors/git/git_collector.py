@@ -2,6 +2,14 @@
 """
 Git Collector - Captures git events and sends to Context Keeper
 """
+
+# Check if GitPython is available
+HAS_GITPYTHON = True
+try:
+    import git
+except ImportError:
+    HAS_GITPYTHON = False
+    print("⚠️  GitPython not installed. Using subprocess fallback.")
 import os
 import sys
 import json
@@ -11,17 +19,37 @@ from pathlib import Path
 from datetime import datetime
 import requests
 import argparse
+import logging
+from typing import Dict, List, Any
+import click
+
 
 class GitCollector:
-    def __init__(self, repo_path=".", api_url="http://localhost:8000"):
-        self.repo_path = Path(repo_path).resolve()
+    def __init__(self, repo_path= str, api_url= str):
+        self.repo_path = Path(repo_path).expanduser().resolve()
         self.api_url = api_url
+        # self.repo = git.Repo(self.repo_path)
+        self.processed_commits = set()
         
         if not (self.repo_path / ".git").exists():
             print(f"❌ Error: {self.repo_path} is not a git repository")
             sys.exit(1)
         
         print(f"✅ Git repository: {self.repo_path}")
+        print(f"📡 API URL: {self.api_url}")
+
+        if HAS_GITPYTHON:
+            try:
+                self.repo = git.Repo(self.repo_path)
+                self.use_gitpython = True
+                print(f"✅ Using GitPython for repository: {self.repo_path}")
+            except Exception as e:
+                print(f"⚠️  GitPython failed, using subprocess: {e}")
+                self.use_gitpython = False
+        else:
+            self.use_gitpython = False
+            print(f"✅ Using subprocess for repository: {self.repo_path}")
+        
         print(f"📡 API URL: {self.api_url}")
     
     def run_git_command(self, *args):
