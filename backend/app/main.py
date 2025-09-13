@@ -13,7 +13,9 @@ from typing import Optional, List, Dict, Any
 from datetime import datetime, timedelta
 import uvicorn
 import os
+import json
 from pathlib import Path
+
 
 # Vector database imports
 from qdrant_client import QdrantClient
@@ -34,6 +36,12 @@ ingestion_status = {
     "total": 0,
     "last_ingested": None
 }
+DATA_DIR = Path("./data")
+DATA_DIR.mkdir(exist_ok=True)
+REPOS_FILE = DATA_DIR / "repositories.json"
+REPOS_FILE = Path("./data/repositories.json")
+indexed_repositories = {} 
+
 
 # Global services
 qdrant_client = None
@@ -50,13 +58,13 @@ async def lifespan(app: FastAPI):
     global qdrant_client, embedding_model
     
     logger.info("🚀 Starting Context Keeper with Docker services...")
-    
+    load_repositories()
     # Initialize Qdrant
     try:
         qdrant_client = QdrantClient(host="localhost", port=6333)
         logger.info("✅ Connected to Qdrant")
         
-        # Create collection if it doesn't exist
+        # Create collection if needed
         collections = qdrant_client.get_collections().collections
         if not any(c.name == events_collection for c in collections):
             qdrant_client.create_collection(
@@ -64,9 +72,25 @@ async def lifespan(app: FastAPI):
                 vectors_config=VectorParams(size=384, distance=Distance.COSINE)
             )
             logger.info(f"✅ Created collection: {events_collection}")
+        else:
+            # Load existing events from Qdrant into memory
+            try:
+                results = qdrant_client.scroll(
+                    collection_name=events_collection,
+                    limit=1000,
+                    with_payload=True,
+                    with_vectors=False
+                )[0]
+                
+                for point in results:
+                    git_events.append(point.payload)
+                
+                logger.info(f"✅ Loaded {len(results)} existing events from Qdrant")
+            except Exception as e:
+                logger.error(f"Failed to load existing events: {e}")
+                
     except Exception as e:
         logger.warning(f"⚠️ Qdrant not available: {e}")
-        logger.info("Running in degraded mode without vector search")
     
     # Initialize embedding model
     try:
@@ -76,11 +100,12 @@ async def lifespan(app: FastAPI):
         logger.warning(f"⚠️ Could not load embedding model: {e}")
     
     # Create data directory
-    Path("./data").mkdir(exist_ok=True)
+    # Path("./data").mkdir(exist_ok=True)
     
-    logger.info("✅ Context Keeper is ready!")
+    # logger.info("✅ Context Keeper is ready!")
     
     yield
+    save_repositories()
     
     logger.info("👋 Shutting down Context Keeper...")
 
@@ -105,6 +130,7 @@ app.add_middleware(
 class QueryRequest(BaseModel):
     query: str
     limit: Optional[int] = 10
+    repository: Optional[str] = None 
     include_graph: Optional[bool] = False
 
 class QueryResponse(BaseModel):
@@ -128,6 +154,29 @@ def create_embedding(text: str) -> List[float]:
     # Return dummy embedding if model not available
     return [0.0] * 384
 
+def save_repositories():
+    """Save repository list to file"""
+    try:
+        with open(REPOS_FILE, 'w') as f:
+            json.dump(indexed_repositories, f, indent=2)
+        logger.info(f"Saved {len(indexed_repositories)} repositories")
+    except Exception as e:
+        logger.error(f"Failed to save repositories: {e}")
+
+def load_repositories():
+    """Load repository list from file"""
+    global indexed_repositories
+    if REPOS_FILE.exists():
+        try:
+            with open(REPOS_FILE, 'r') as f:
+                indexed_repositories = json.load(f)
+                logger.info(f"✅ Loaded {len(indexed_repositories)} repositories from storage")
+        except Exception as e:
+            logger.error(f"Failed to load repositories: {e}")
+            indexed_repositories = {}
+    else:
+        indexed_repositories = {}
+
 async def store_in_qdrant(event: Dict[str, Any], event_id: str):
     """Store event in Qdrant vector database"""
     if not qdrant_client or not embedding_model:
@@ -136,16 +185,12 @@ async def store_in_qdrant(event: Dict[str, Any], event_id: str):
     try:
         # Create text representation for embedding
         text = f"{event.get('message', '')} {event.get('description', '')} {' '.join(event.get('files_changed', []))}"
-        embedding = create_embedding(text)
+        embedding = embedding_model.encode(text).tolist()
         
         # Store in Qdrant - use UUID string or convert to proper format
         import uuid
+        point_id = str(uuid.uuid4())
         
-        # Generate a UUID if the event_id is just a number
-        if event_id.isdigit():
-            point_id = str(uuid.uuid4())
-        else:
-            point_id = event_id
             
         qdrant_client.upsert(
             collection_name=events_collection,
@@ -157,20 +202,34 @@ async def store_in_qdrant(event: Dict[str, Any], event_id: str):
                 )
             ]
         )
+        logger.info(f"Stored in Qdrant: {event.get('commit_hash', '')[:8]}")
         return True
     except Exception as e:
         logger.error(f"Failed to store in Qdrant: {e}")
         return False
 
-async def search_similar(query: str, limit: int = 10) -> List[Dict[str, Any]]:
+async def search_similar(query: str, limit: int = 10, repository: str = None) -> List[Dict[str, Any]]:
     if not qdrant_client or not embedding_model:
         return []
     
     try:
         query_embedding = create_embedding(query)
+        # Build filter for repository if specified
+        search_filter = None
+        if repository:
+            normalized_repo = str(Path(repository).resolve())
+            search_filter = {
+                "must": [
+                    {
+                        "key": "repository",
+                        "match": {"value": repository}
+                    }
+                ]
+            }
         results = qdrant_client.search(
             collection_name=events_collection,
             query_vector=query_embedding,
+            query_filter=None,
             limit=limit
         )
         
@@ -376,62 +435,74 @@ async def check_repository_status(request: dict):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error checking repository: {e}")
 
+@app.post("/api/repositories/select")
+async def select_repository(request: dict):
+    """Mark a repository as selected for queries"""
+    repository = request.get("repository")
+    selected = request.get("selected", True)
+    
+    if repository in indexed_repositories:
+        indexed_repositories[repository]["selected"] = selected
+        save_repositories()
+        return {"status": "success", "repository": repository, "selected": selected}
+    else:
+        raise HTTPException(status_code=404, detail="Repository not found")
+
 
 @app.post("/api/ingest/git")
 async def ingest_git_event(event: Dict[str, Any], background_tasks: BackgroundTasks):
-    """Ingest git event and store in vector database"""
-    global next_id
-
-    commit_hash = event.get("commit_hash", "")
-    # Check for duplicate in Qdrant first
-    # Check for duplicate in Qdrant first
-    if commit_hash and await check_commit_exists(commit_hash):
-            logger.info(f"⚠️ Duplicate commit skipped (already in Qdrant): {commit_hash[:8]}")
+    """Ingest git event with repository tracking"""
+    try:
+        commit_hash = event.get("commit_hash", "")
+        repository = event.get("repository", "unknown")
+        
+        # Track repository
+        if repository != "unknown" and repository not in indexed_repositories:
+            indexed_repositories[repository] = {
+                "path": repository,
+                "first_indexed": datetime.now().isoformat(),
+                "last_updated": datetime.now().isoformat(),
+                "commit_count": 0
+            }
+        
+        if repository in indexed_repositories:
+            indexed_repositories[repository]["last_updated"] = datetime.now().isoformat()
+            indexed_repositories[repository]["commit_count"] = \
+                indexed_repositories[repository].get("commit_count", 0) + 1
+            
+            # Save periodically
+            if indexed_repositories[repository]["commit_count"] % 10 == 0:
+                save_repositories()
+        
+        # Check for duplicate
+        if commit_hash and await check_commit_exists(commit_hash):
             return {
                 "status": "duplicate",
-                "message": "Commit already indexed in vector store",
-                "commit": commit_hash[:8] if commit_hash else "",
-                "source": "qdrant"
+                "message": "Commit already indexed",
+                "commit": commit_hash[:8]
             }
-
-    if commit_hash:
-        # Check if this commit already exists
-        for existing in git_events:
-            if existing.get("commit_hash") == commit_hash:
-                logger.info(f"⚠️ Duplicate commit skipped: {commit_hash[:8]}")
-                return {
-                    "status": "duplicate",
-                    "message": "Commit already indexed",
-                    "commit": commit_hash[:8] if commit_hash else "",
-                    "source": "memory"
-                }
-    
-    try:
-        # Add metadata
-        event["commit_hash"] = event.get("commit_hash", "")
+        
+        # Add to memory and Qdrant
         event["timestamp"] = event.get("timestamp", datetime.now().isoformat())
         event["type"] = "git_commit"
+        event["repository"] = repository
         
-        # Use UUID instead of integer
         import uuid
         event_id = str(uuid.uuid4())
         
-        # Store in memory
         git_events.append(event)
         
-        # Store in Qdrant (async)
         if qdrant_client:
             background_tasks.add_task(store_in_qdrant, event, event_id)
-        
-        logger.info(f"📥 Ingested git event: {event.get('commit_hash', '')[:8]}")
         
         return {
             "status": "success",
             "message": "Git event ingested",
             "event_id": event_id,
-            "commit": event.get("commit_hash", "")[:8],
-            "vector_storage": qdrant_client is not None
+            "commit": commit_hash[:8] if commit_hash else "",
+            "repository": repository
         }
+        
     except Exception as e:
         logger.error(f"Ingestion failed: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -440,44 +511,27 @@ async def ingest_git_event(event: Dict[str, Any], background_tasks: BackgroundTa
 async def query_context(request: QueryRequest):
     """Query context using vector search and LLM"""
     try:
+        logger.info(f"Query request: {request.query}, repository: {request.repository}")
         query_lower = request.query.lower()
         if any(word in query_lower for word in ["all", "list all", "show all", "every"]):
             request.limit = 100  # Show more when user asks for all
         # Search for similar events
-        similar_events = await search_similar(request.query, request.limit)
-        
+        similar_events = await search_similar(request.query, request.limit, repository=request.repository)
+        logger.info(f"Found {len(similar_events)} similar events")
         # Generate answer using LLM if available
         answer = await generate_intelligent_answer(request.query, similar_events)
-#         if similar_events and await query_llm("test"):
-#             context = "\n".join([
-#                 f"- {e.get('message', e.get('description', ''))}" 
-#                 for e in similar_events[:5]
-#             ])
-            
-#             prompt = f"""Based on the following context, answer this question: {request.query}
-
-# Context:
-# {context}
-
-# Answer:"""
-            
-#             llm_response = await query_llm(prompt)
-#             if llm_response:
-#                 answer = llm_response
-#             else:
-#                 answer = f"Found {len(similar_events)} relevant events for: {request.query}"
-#         else:
-#             answer = f"Found {len(similar_events)} relevant events" if similar_events else "No relevant events found"
         
         # Format sources
         sources = []
         for event in similar_events[:request.limit]:
+            commit_hash = event.get("commit_hash", "")
             sources.append({
                 "type": event.get("type", "unknown"),
                 "content": event.get("message", event.get("description", "")),
                 "timestamp": event.get("timestamp", ""),
                 "author": event.get("author", ""),
-                "commit": event.get("commit_hash", "")[:8]
+                "commit": event.get("commit_hash", "")[:8] if commit_hash else "",
+                "repository": event.get("repository", "unknown")
             })
         
         return QueryResponse(
@@ -487,10 +541,48 @@ async def query_context(request: QueryRequest):
         )
         
     except Exception as e:
-        logger.error(f"Query failed: {e}")
+        logger.error(f"Query failed: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
-# Add these endpoints to your main.py
+@app.get("/api/repositories")
+async def get_repositories():
+    """Get list of all indexed repositories with stats"""
+    # Update counts from Qdrant
+    if qdrant_client:
+        try:
+            # Get actual commit counts per repository
+            for repo_path in indexed_repositories:
+                filter_condition = {
+                    "must": [{"key": "repository", "match": {"value": repo_path}}]
+                }
+                
+                count = 0
+                offset = None
+                while True:
+                    results = qdrant_client.scroll(
+                        collection_name=events_collection,
+                        scroll_filter=filter_condition,
+                        limit=100,
+                        offset=offset,
+                        with_payload=False,
+                        with_vectors=False
+                    )
+                    points, next_offset = results
+                    count += len(points)
+                    if next_offset is None:
+                        break
+                    offset = next_offset
+                
+                indexed_repositories[repo_path]["commit_count"] = count
+        except Exception as e:
+            logger.error(f"Error updating repository counts: {e}")
+    
+    return {
+        "repositories": indexed_repositories,
+        "total": len(indexed_repositories)
+    }
+
+
 
 @app.delete("/api/clear")
 async def clear_all_data():
@@ -702,6 +794,16 @@ async def start_ingestion(request: dict):
     if not repo_path:
         raise HTTPException(status_code=400, detail="repo_path required")
     
+    if repo_path not in indexed_repositories:
+        indexed_repositories[repo_path] = {
+            "path": repo_path,
+            "first_indexed": datetime.now().isoformat(),
+            "last_updated": datetime.now().isoformat(),
+            "commit_count": 0,
+            "selected": True  # Auto-select new repositories
+        }
+        save_repositories()
+    
     # Check repository status first
     check_result = await check_repository_status({"repo_path": repo_path})
     
@@ -745,6 +847,7 @@ async def start_ingestion(request: dict):
             
             ingestion_status["is_ingesting"] = False
             ingestion_status["last_ingested"] = datetime.now().isoformat()
+            save_repositories()
         except Exception as e:
             ingestion_status["is_ingesting"] = False
             ingestion_status["error"] = str(e)
@@ -803,7 +906,9 @@ async def get_statistics():
         "events": {
             "in_memory": len(git_events) + len(context_events),
             "in_qdrant": 0
-        }
+        },
+        "repositories": len(indexed_repositories),  # Show repository count
+        "queries_made": 0 # Placeholder for future tracking
     }
     
     if qdrant_client:

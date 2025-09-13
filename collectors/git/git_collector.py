@@ -342,7 +342,8 @@ class GitCollector:
             "timestamp": datetime.fromtimestamp(commit.committed_date).isoformat(),
             "message": commit.message.strip(),
             "branch": self.repo.active_branch.name if not self.repo.head.is_detached else "detached",
-            "files_changed": list(set(files_changed))[:20]
+            "files_changed": list(set(files_changed))[:20],
+            "repository": str(self.repo_path)
         }
     
     def get_commits_subprocess(self, max_count=100, commit_list=None):
@@ -378,7 +379,8 @@ class GitCollector:
                             "author": f"{parts[1]} <{parts[2]}>",
                             "timestamp": datetime.fromtimestamp(int(parts[3])).isoformat(),
                             "message": parts[4],
-                            "branch": self.run_git_command("rev-parse", "--abbrev-ref", "HEAD") or "unknown"
+                            "branch": self.run_git_command("rev-parse", "--abbrev-ref", "HEAD") or "unknown",
+                            "repository": str(self.repo_path) 
                         }
                         
                         # Get files changed
@@ -413,7 +415,8 @@ class GitCollector:
                 "timestamp": datetime.fromtimestamp(int(parts[3])).isoformat(),
                 "message": parts[4],
                 "branch": self.run_git_command("rev-parse", "--abbrev-ref", "HEAD") or "unknown",
-                "files_changed": files_changed
+                "files_changed": files_changed,
+                "repository": str(self.repo_path) 
             }
         return None
     
