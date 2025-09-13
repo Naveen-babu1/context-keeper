@@ -22,6 +22,9 @@ from qdrant_client import QdrantClient
 from qdrant_client.models import Distance, VectorParams, PointStruct
 from sentence_transformers import SentenceTransformer
 
+from datetime import datetime
+from collections import defaultdict
+
 # For LLM
 import httpx
 
@@ -154,6 +157,35 @@ def create_embedding(text: str) -> List[float]:
     # Return dummy embedding if model not available
     return [0.0] * 384
 
+def create_code_embedding(event: Dict[str, Any]) -> List[float]:
+    """Create embedding that captures code context"""
+    if not embedding_model:
+        return [0.0] * 384
+    
+    # Combine different aspects of the commit
+    text_parts = []
+    
+    # Commit message (intent)
+    text_parts.append(f"Message: {event.get('message', '')}")
+    
+    # Files changed (scope)
+    files = event.get('files_changed', [])
+    if files:
+        text_parts.append(f"Files: {', '.join(files[:10])}")
+    
+    # Code diffs (actual changes)
+    diffs = event.get('code_diffs', [])
+    for diff in diffs[:3]:  # First 3 diffs
+        if 'diff' in diff:
+            # Extract key lines from diff
+            lines = diff['diff'].split('\n')
+            important_lines = [l for l in lines if l.startswith('+') or l.startswith('-')][:10]
+            text_parts.append(f"Changes in {diff['file']}: {' '.join(important_lines)}")
+    
+    # Combine and create embedding
+    full_text = " ".join(text_parts)
+    return embedding_model.encode(full_text).tolist()
+
 def save_repositories():
     """Save repository list to file"""
     try:
@@ -248,64 +280,160 @@ async def search_similar(query: str, limit: int = 10, repository: str = None) ->
         return []
     
 async def generate_intelligent_answer(query: str, events: List[Dict]) -> str:
-    """Generate intelligent summary of events"""
+    """Generate truly intelligent answers about any repository"""
+    logger.info(f"Generating answer for query: {query}, with {len(events)} events")
     if not events:
         return "No relevant events found."
     
     query_lower = query.lower()
     
-    # Special handling for list/show all queries
-    if any(word in query_lower for word in ["all", "list all", "show all", "every"]):
-        commit_list = []
-        for e in events[:20]:  # Show first 20
-            commit_hash = e.get('commit_hash', '')
-            msg = e.get('message', 'No message')
-            author = e.get('author', 'Unknown')
-            commit_str = f"• {msg} [{commit_hash[:8] if commit_hash else 'no-hash'}] by {author}"
-            commit_list.append(commit_str)
-        
-        return f"Found {len(events)} commits. Here are the most relevant:\n\n" + "\n".join(commit_list)
+    # Check for overview/summary requests
+    if any(word in query_lower for word in ["overview", "summarize", "summary", "tell about", "describe", "what is"]):
+        logger.info("Detected summary request")
+        return await generate_repository_overview(events)
     
-    # Create context from events
-    context = "\n".join([
-        f"- {e.get('message', '')} (commit: {e.get('commit_hash', '')[:8] if e.get('commit_hash') else 'no-hash'})"
-        for e in events[:10]
-    ])
+    # Check for timeline/history requests
+    elif any(word in query_lower for word in ["timeline", "history", "evolution", "progress"]):
+        return await generate_timeline_summary(events)
     
-    # Try to use LLM if available
-    if await query_llm("test"):
-        prompt = f"""Based on these commits, provide a helpful summary for: {query}
-        
-Commits:
-{context}
+    # Check for pattern analysis
+    elif any(word in query_lower for word in ["pattern", "trend", "focus", "activity"]):
+        return await analyze_development_patterns(events)
+    
+    # Check for specific analysis types
+    elif "why" in query_lower or "reason" in query_lower:
+        return await explain_development_decisions(events, query)
+    
+    elif "how" in query_lower:
+        return await explain_implementation_approach(events, query)
+    
+    elif "what changed" in query_lower or "difference" in query_lower:
+        return await analyze_changes(events, query)
+    
+    # Default: provide intelligent listing with context
+    return await generate_contextual_listing(query, events)
 
-Summary:"""
-        response = await query_llm(prompt)
-        if response:
-            return response
+async def generate_repository_overview(events: List[Dict]) -> str:
+    """Generate comprehensive overview for any repository"""
+    # [Copy the entire function from document 1]
+
+def infer_project_type(files: set) -> str:
+    """Infer project type from file extensions"""
+    # [Copy the entire function from document 1]
+
+def analyze_tech_stack(files: set) -> list:
+    """Analyze technology stack from files"""
+    # [Copy the entire function from document 1]
+
+def get_category_emoji(category: str) -> str:
+    """Get emoji for commit category"""
+    # [Copy the entire function from document 1]
+
+def analyze_velocity(events: List[Dict]) -> str:
+    """Analyze development velocity"""
+    # [Copy the entire function from document 1]
+
+async def explain_development_decisions(events: List[Dict], query: str) -> str:
+    """Explain why certain development decisions were made"""
+    # [Copy the entire function from document 1]
+
+def analyze_common_areas(events: List[Dict]) -> List[str]:
+    """Analyze common areas from commit messages and files"""
+    # [Copy the entire function from document 1]
+
+# Add these missing helper functions that are referenced but not in your current code:
+async def generate_timeline_summary(events: List[Dict]) -> str:
+    """Generate timeline summary of development"""
+    if not events:
+        return "No timeline data available."
     
-    # Intelligent fallback based on query type
-    if "version" in query_lower:
-        versions = [e for e in events if 'version' in e.get('message', '').lower()]
-        if versions:
-            version_list = [v.get('message', '') for v in versions[:5]]
-            return f"Found {len(versions)} version updates:\n" + "\n".join(f"• {v}" for v in version_list)
+    from datetime import datetime
+    timeline = defaultdict(list)
     
-    elif "fix" in query_lower or "bug" in query_lower:
-        fixes = [e for e in events if any(word in e.get('message', '').lower() for word in ['fix', 'bug', 'patch'])]
-        if fixes:
-            return f"Found {len(fixes)} bug fixes/patches:\n" + "\n".join(f"• {f.get('message', '')}" for f in fixes[:5])
+    for event in events:
+        timestamp = event.get("timestamp", "")
+        if timestamp:
+            try:
+                dt = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
+                week = dt.strftime("%Y-W%U")
+                timeline[week].append(event)
+            except:
+                pass
     
-    elif "feature" in query_lower:
-        features = [e for e in events if any(word in e.get('message', '').lower() for word in ['feat', 'add', 'implement'])]
-        if features:
-            return f"Found {len(features)} feature additions:\n" + "\n".join(f"• {f.get('message', '')}" for f in features[:5])
+    summary = "## Development Timeline\n\n"
+    sorted_weeks = sorted(timeline.items(), reverse=True)[:8]
     
-    # Default response with more detail
-    return f"Found {len(events)} relevant commits for '{query}':\n" + "\n".join(
-        f"• {e.get('message', '')} by {e.get('author', 'Unknown')}" 
-        for e in events[:5]
-    )
+    for week, commits in sorted_weeks:
+        summary += f"**Week {week}:** {len(commits)} commits\n"
+        for commit in commits[:2]:
+            summary += f"  - {commit.get('message', '')[:60]}\n"
+        summary += "\n"
+    
+    return summary
+
+async def analyze_development_patterns(events: List[Dict]) -> str:
+    """Analyze patterns in development"""
+    patterns = analyze_commit_patterns(events)
+    
+    analysis = "## Development Patterns\n\n"
+    analysis += f"**Commit Types:**\n"
+    for commit_type, count in patterns["commit_types"].items():
+        if count > 0:
+            analysis += f"- {commit_type.title()}: {count} commits\n"
+    
+    if patterns.get("most_changed_files"):
+        analysis += f"\n**Most Changed Files:**\n"
+        for file, count in patterns["most_changed_files"][:5]:
+            analysis += f"- {file}: {count} changes\n"
+    
+    return analysis
+
+async def explain_implementation_approach(events: List[Dict], query: str) -> str:
+    """Explain how something was implemented"""
+    if not events:
+        return "No implementation details found."
+    
+    explanation = "## Implementation Approach\n\n"
+    
+    for event in events[:5]:
+        explanation += f"**{event.get('message', '')[:60]}**\n"
+        if event.get("files_changed"):
+            explanation += f"Files modified: {', '.join(event.get('files_changed', [])[:3])}\n"
+        explanation += "\n"
+    
+    return explanation
+
+async def analyze_changes(events: List[Dict], query: str) -> str:
+    """Analyze what changed between commits"""
+    if not events:
+        return "No changes found."
+    
+    analysis = "## Changes Analysis\n\n"
+    
+    for event in events[:5]:
+        analysis += f"**{event.get('timestamp', '')[:10]}** - {event.get('message', '')[:60]}\n"
+        if event.get("files_changed"):
+            analysis += f"- Modified: {', '.join(event.get('files_changed', [])[:3])}\n"
+        analysis += "\n"
+    
+    return analysis
+
+async def generate_contextual_listing(query: str, events: List[Dict]) -> str:
+    """Generate a contextual listing of events"""
+    if not events:
+        return "No events found matching your query."
+    
+    listing = f"Found {len(events)} relevant commits:\n\n"
+    
+    for i, event in enumerate(events[:10], 1):
+        listing += f"{i}. **{event.get('message', '')[:60]}**\n"
+        listing += f"   Author: {event.get('author', 'Unknown')}\n"
+        listing += f"   Date: {event.get('timestamp', '')[:10]}\n"
+        if event.get("files_changed"):
+            listing += f"   Files: {', '.join(event.get('files_changed', [])[:3])}\n"
+        listing += "\n"
+    
+    return listing
 
 async def query_llm(prompt: str) -> str:
     """Query local LLM using Ollama"""
@@ -448,6 +576,133 @@ async def select_repository(request: dict):
     else:
         raise HTTPException(status_code=404, detail="Repository not found")
 
+@app.post("/api/analyze/commit")
+async def analyze_commit(request: dict):
+    """Analyze what a specific commit does"""
+    commit_hash = request.get("commit_hash")
+    
+    # Find the commit
+    commit_data = None
+    for event in git_events:
+        if event.get("commit_hash", "").startswith(commit_hash):
+            commit_data = event
+            break
+    
+    if not commit_data:
+        raise HTTPException(status_code=404, detail="Commit not found")
+    
+    # Analyze the commit
+    analysis = {
+        "summary": commit_data.get("message"),
+        "impact": {
+            "files_changed": len(commit_data.get("files_changed", [])),
+            "type": classify_commit_type(commit_data.get("message", ""))
+        },
+        "context": {}
+    }
+    
+    # Find related commits (before and after)
+    commit_index = git_events.index(commit_data)
+    if commit_index > 0:
+        analysis["context"]["previous"] = git_events[commit_index - 1].get("message")
+    if commit_index < len(git_events) - 1:
+        analysis["context"]["next"] = git_events[commit_index + 1].get("message")
+    
+    # Generate intelligent explanation
+    if commit_data.get("code_diffs"):
+        prompt = f"""Explain this commit in detail:
+        
+Message: {commit_data.get('message')}
+Files changed: {', '.join(commit_data.get('files_changed', []))}
+
+What does this commit do and why was it likely needed?"""
+        
+        explanation = await query_llm(prompt)
+        if explanation:
+            analysis["explanation"] = explanation
+    
+    return analysis
+
+@app.post("/api/analyze/repository")
+async def analyze_repository(request: dict):
+    """Provide intelligent repository analysis"""
+    repo_path = request.get("repository")
+    
+    # Filter events for this repository
+    repo_events = [e for e in git_events if repo_path in e.get("repository", "")]
+    
+    if not repo_events:
+        raise HTTPException(status_code=404, detail="Repository not found")
+    
+    # Analyze patterns
+    analysis = {
+        "overview": {
+            "total_commits": len(repo_events),
+            "first_commit": repo_events[-1].get("timestamp") if repo_events else None,
+            "last_commit": repo_events[0].get("timestamp") if repo_events else None
+        },
+        "patterns": analyze_commit_patterns(repo_events),
+        "recommendations": []
+    }
+    
+    # Generate insights
+    prompt = f"""Analyze this repository's development patterns:
+    
+Total commits: {len(repo_events)}
+Recent activity: {', '.join(e.get('message', '')[:30] for e in repo_events[:5])}
+
+Provide insights about:
+1. Development velocity
+2. Code quality trends
+3. Areas of focus
+4. Potential improvements"""
+    
+    insights = await query_llm(prompt)
+    if insights:
+        analysis["insights"] = insights
+    
+    return analysis
+
+def analyze_commit_patterns(events):
+    """Analyze patterns in commit history"""
+    patterns = {
+        "commit_frequency": {},
+        "common_files": {},
+        "commit_types": {
+            "feature": 0,
+            "fix": 0,
+            "refactor": 0,
+            "docs": 0,
+            "other": 0
+        }
+    }
+    
+    for event in events:
+        # Classify commit type
+        message = event.get("message", "").lower()
+        if "feat" in message or "add" in message:
+            patterns["commit_types"]["feature"] += 1
+        elif "fix" in message or "bug" in message:
+            patterns["commit_types"]["fix"] += 1
+        elif "refactor" in message:
+            patterns["commit_types"]["refactor"] += 1
+        elif "doc" in message:
+            patterns["commit_types"]["docs"] += 1
+        else:
+            patterns["commit_types"]["other"] += 1
+        
+        # Track file changes
+        for file in event.get("files_changed", []):
+            patterns["common_files"][file] = patterns["common_files"].get(file, 0) + 1
+    
+    # Get most changed files
+    patterns["most_changed_files"] = sorted(
+        patterns["common_files"].items(), 
+        key=lambda x: x[1], 
+        reverse=True
+    )[:10]
+    
+    return patterns
 
 @app.post("/api/ingest/git")
 async def ingest_git_event(event: Dict[str, Any], background_tasks: BackgroundTasks):
@@ -509,40 +764,246 @@ async def ingest_git_event(event: Dict[str, Any], background_tasks: BackgroundTa
 
 @app.post("/api/query", response_model=QueryResponse)
 async def query_context(request: QueryRequest):
-    """Query context using vector search and LLM"""
+    """Enhanced query with code understanding"""
     try:
-        logger.info(f"Query request: {request.query}, repository: {request.repository}")
-        query_lower = request.query.lower()
-        if any(word in query_lower for word in ["all", "list all", "show all", "every"]):
-            request.limit = 100  # Show more when user asks for all
-        # Search for similar events
-        similar_events = await search_similar(request.query, request.limit, repository=request.repository)
-        logger.info(f"Found {len(similar_events)} similar events")
-        # Generate answer using LLM if available
-        answer = await generate_intelligent_answer(request.query, similar_events)
+        query = request.query
+        logger.info(f"Query: {query}, Repository: {request.repository}")
         
-        # Format sources
-        sources = []
-        for event in similar_events[:request.limit]:
-            commit_hash = event.get("commit_hash", "")
-            sources.append({
-                "type": event.get("type", "unknown"),
-                "content": event.get("message", event.get("description", "")),
+        # Get relevant events
+        limit = 50 if "summar" in query.lower() else request.limit * 2
+        similar_events = await search_similar(query, limit, request.repository)
+        
+        # Use the new generalized answer generation
+        answer = await generate_intelligent_answer(query, similar_events)
+        # Format sources with better context
+        formatted_sources = []
+        for i, event in enumerate(similar_events[:request.limit]):
+            formatted_sources.append({
+                "type": event.get("type", "git_commit"),
+                "content": event.get("message", ""),
                 "timestamp": event.get("timestamp", ""),
                 "author": event.get("author", ""),
-                "commit": event.get("commit_hash", "")[:8] if commit_hash else "",
-                "repository": event.get("repository", "unknown")
+                "commit": event.get("commit_hash", "")[:8] if event.get("commit_hash") else "",
+                "repository": event.get("repository", "unknown"),
+                "files_changed": event.get("files_changed", [])[:5],  # Add files
+                "context": f"Commit {i+1} of {len(similar_events)}"
             })
+        
+        # Calculate confidence based on response quality
+        confidence = calculate_confidence(query, answer, formatted_sources)
         
         return QueryResponse(
             answer=answer,
-            sources=sources,
-            confidence=0.85 if similar_events else 0.25
+            sources=formatted_sources,
+            confidence=confidence
         )
         
     except Exception as e:
         logger.error(f"Query failed: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
+
+def classify_query_intent(query: str) -> str:
+    """Understand what the user is asking for"""
+    query_lower = query.lower()
+    
+    # Check for specific patterns
+    if any(word in query_lower for word in ["summary", "summarize", "overview", "describe"]):
+        return "summary"
+    elif any(word in query_lower for word in ["why", "how", "explain", "understand", "reason"]):
+        return "explanation"
+    elif any(word in query_lower for word in ["timeline", "history", "evolution", "progress"]):
+        return "timeline"
+    elif any(word in query_lower for word in ["compare", "difference", "between", "versus"]):
+        return "comparison"
+    elif any(word in query_lower for word in ["list", "show all", "all commits"]):
+        return "listing"
+    else:
+        return "search"
+
+async def generate_repository_summary(query: str, events: List[Dict]) -> str:
+    """Generate intelligent repository summary"""
+    if not events:
+        return "No repository data available for summary."
+    
+    # Analyze the repository
+    analysis = {
+        "total_commits": len(events),
+        "authors": len(set(e.get("author", "") for e in events)),
+        "files_touched": len(set(f for e in events for f in e.get("files_changed", []))),
+        "date_range": f"{events[-1].get('timestamp', '')} to {events[0].get('timestamp', '')}",
+    }
+    
+    # Categorize commits
+    features = []
+    fixes = []
+    refactors = []
+    docs = []
+    
+    for event in events:
+        msg = event.get("message", "").lower()
+        if "feat" in msg or "add" in msg or "implement" in msg:
+            features.append(event)
+        elif "fix" in msg or "bug" in msg or "patch" in msg:
+            fixes.append(event)
+        elif "refactor" in msg or "improve" in msg or "optimize" in msg:
+            refactors.append(event)
+        elif "doc" in msg or "readme" in msg:
+            docs.append(event)
+    
+    # Build intelligent summary
+    summary = f"""## Repository Analysis
+
+**Overview:**
+This repository contains {analysis['total_commits']} commits from {analysis['authors']} contributors, 
+modifying {analysis['files_touched']} files between {analysis['date_range']}.
+
+**Development Activity:**
+- 🚀 Features/Additions: {len(features)} commits
+- 🐛 Bug Fixes: {len(fixes)} commits
+- 🔧 Refactoring: {len(refactors)} commits
+- 📚 Documentation: {len(docs)} commits
+
+**Key Features Developed:**"""
+    
+    # Add top features
+    for feat in features[:5]:
+        summary += f"\n- {feat.get('message', '')[:60]}"
+    
+    # Add recent focus
+    summary += "\n\n**Recent Development Focus:**"
+    recent = events[:10]
+    
+    # Identify patterns in recent commits
+    recent_files = {}
+    for event in recent:
+        for file in event.get("files_changed", []):
+            ext = file.split('.')[-1] if '.' in file else 'other'
+            recent_files[ext] = recent_files.get(ext, 0) + 1
+    
+    if recent_files:
+        top_types = sorted(recent_files.items(), key=lambda x: x[1], reverse=True)[:3]
+        summary += f"\nMost active file types: {', '.join(f'.{ext} ({count} changes)' for ext, count in top_types)}"
+    
+    # Add AI-generated insights if LLM is available
+    if events[:5]:  # Use recent commits for context
+        prompt = f"""Based on these recent commits, provide 2-3 key insights about this repository's development:
+
+Recent commits:
+{chr(10).join(f"- {e.get('message', '')}" for e in events[:5])}
+
+Provide brief, actionable insights about the codebase direction and quality."""
+        
+        insights = await query_llm(prompt)
+        if insights:
+            summary += f"\n\n**AI Insights:**\n{insights}"
+    
+    return summary
+
+async def explain_code_changes(query: str, events: List[Dict]) -> str:
+    """Explain what code changes were made and why"""
+    if not events:
+        return "No commits found matching your query."
+    
+    explanation = f"Based on the commit history, here's what I found:\n\n"
+    
+    # Group commits by type/purpose
+    grouped = {}
+    for event in events[:10]:  # Analyze top 10
+        msg = event.get("message", "")
+        # Extract the type (feat, fix, etc.)
+        if ":" in msg:
+            type_prefix = msg.split(":")[0].strip()
+            if type_prefix not in grouped:
+                grouped[type_prefix] = []
+            grouped[type_prefix].append(event)
+        else:
+            if "other" not in grouped:
+                grouped["other"] = []
+            grouped["other"].append(event)
+    
+    # Explain each group
+    for commit_type, commits in grouped.items():
+        explanation += f"**{commit_type.title()} Changes:**\n"
+        for commit in commits[:3]:
+            explanation += f"- {commit.get('message', '')[:80]}\n"
+            if commit.get("files_changed"):
+                explanation += f"  Files: {', '.join(commit.get('files_changed', [])[:3])}\n"
+        explanation += "\n"
+    
+    # Add contextual explanation
+    if "why" in query.lower():
+        # Try to explain the reasoning
+        explanation += "**Likely Reasons for Changes:**\n"
+        
+        if any("fix" in e.get("message", "").lower() for e in events):
+            explanation += "- Bug fixes indicate ongoing maintenance and quality improvements\n"
+        if any("feat" in e.get("message", "").lower() for e in events):
+            explanation += "- New features show active development and expansion\n"
+        if any("refactor" in e.get("message", "").lower() for e in events):
+            explanation += "- Refactoring suggests code quality and maintainability focus\n"
+    
+    return explanation
+
+async def generate_timeline_analysis(query: str, events: List[Dict]) -> str:
+    """Analyze development timeline"""
+    if not events:
+        return "No timeline data available."
+    
+    # Group by time periods
+    from collections import defaultdict
+    from datetime import datetime, timedelta
+    
+    timeline = defaultdict(list)
+    
+    for event in events:
+        timestamp = event.get("timestamp", "")
+        if timestamp:
+            try:
+                dt = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
+                week = dt.strftime("%Y-W%U")
+                timeline[week].append(event)
+            except:
+                pass
+    
+    analysis = "## Development Timeline\n\n"
+    
+    # Show weekly activity
+    sorted_weeks = sorted(timeline.items(), reverse=True)[:8]  # Last 8 weeks
+    
+    for week, commits in sorted_weeks:
+        analysis += f"**Week {week}:** {len(commits)} commits\n"
+        # Show key commits
+        for commit in commits[:2]:
+            analysis += f"  - {commit.get('message', '')[:60]}\n"
+        analysis += "\n"
+    
+    return analysis
+
+async def get_repository_events(repository: str = None, limit: int = 100) -> List[Dict]:
+    """Get events for a repository"""
+    if repository:
+        # Filter by repository
+        return [e for e in git_events if repository in e.get("repository", "")][:limit]
+    else:
+        # Return all events
+        return git_events[:limit]
+
+def calculate_confidence(query: str, answer: str, sources: List[Dict]) -> float:
+    """Calculate confidence score for the answer"""
+    confidence = 0.5  # Base confidence
+    
+    # Increase confidence based on factors
+    if sources:
+        confidence += min(0.3, len(sources) * 0.05)  # More sources = higher confidence
+    
+    if len(answer) > 100:  # Detailed answer
+        confidence += 0.1
+    
+    if "I found" in answer or "Based on" in answer:  # Concrete answer
+        confidence += 0.1
+    
+    # Cap at 0.95
+    return min(0.95, confidence)
 
 @app.get("/api/repositories")
 async def get_repositories():

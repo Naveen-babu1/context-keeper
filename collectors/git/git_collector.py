@@ -319,19 +319,36 @@ class GitCollector:
         """Extract data from a GitPython commit object"""
         # Get files changed
         files_changed = []
+        code_diffs = []
         try:
             if not commit.parents:
                 # First commit - all files are new
                 for item in commit.tree.traverse():
                     if item.type == 'blob':
                         files_changed.append(item.path)
+                    try:
+                        content = item.data_stream.read().decode('utf-8', errors='ignore')
+                        code_diffs.append({
+                            'file': item.path,
+                            'type': 'added',
+                            'content': content[:1000]  # First 1000 chars
+                        })
+                    except Exception as e:
+                        print(f"⚠️ Error processing file {item.path}: {e}")
             else:
                 # Get diff with parent
                 for parent in commit.parents[:1]:
-                    diffs = commit.diff(parent)
+                    diffs = commit.diff(parent, create_patch=True)
                     for diff in diffs:
                         if diff.a_path:
-                            files_changed.append(diff.a_path)
+                            files_changed.append(diff.a_path or diff.b_path)
+                            # Capture the actual diff
+                            if diff.diff:
+                                code_diffs.append({
+                                    'file': diff.a_path or diff.b_path,
+                                    'type': 'modified' if diff.a_blob and diff.b_blob else 'added' if diff.b_blob else 'deleted',
+                                    'diff': diff.diff.decode('utf-8', errors='ignore')[:2000]
+                                })
         except:
             pass
         
@@ -343,6 +360,7 @@ class GitCollector:
             "message": commit.message.strip(),
             "branch": self.repo.active_branch.name if not self.repo.head.is_detached else "detached",
             "files_changed": list(set(files_changed))[:20],
+            "code_diffs": code_diffs,
             "repository": str(self.repo_path)
         }
     

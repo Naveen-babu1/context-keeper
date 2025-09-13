@@ -705,33 +705,27 @@
           }
 
           const data = await response.json(); // Make sure this line exists
-          const repoList = document.getElementById("repoList");
+          const repoFilter = document.getElementById('repoFilter');
+          repoFilter.innerHTML = '<option value="">All Repositories</option>';
 
-          if (
-            !data.repositories ||
-            Object.keys(data.repositories).length === 0
-          ) {
-            repoList.innerHTML = `
-                <div style="text-align: center; color: #999; padding: 20px;">
-                    <div style="font-size: 36px; margin-bottom: 10px;">📂</div>
-                    <div>No repositories indexed yet</div>
-                </div>
-            `;
-          } else {
-            repoList.innerHTML = "";
+          if (data.repositories) {
             for (const [path, info] of Object.entries(data.repositories)) {
-              const repoName = path.split(/[/\\]/).pop() || path;
-              const div = document.createElement("div");
-              div.className = "repo-item";
-
-              if (info.selected) {
-                div.classList.add("selected");
-                selectedRepository = path; // Set the selected repository
-              }
-
-              // ... rest of your repo item creation code
+              // Skip repositories with 0 commits
+                if (!info.commit_count || info.commit_count === 0) {
+                    continue;
+                }
+                const repoName = path.split(/[/\\]/).pop() || path;
+                const option = document.createElement('option');
+                option.value = path;
+                option.textContent = `${repoName} (${info.commit_count || 0} commits)`;
+                repoFilter.appendChild(option);
             }
-          }
+        }
+        
+        // Count only repositories with commits
+        const reposWithCommits = Object.values(data.repositories || {})
+            .filter(info => info.commit_count > 0).length;
+        document.getElementById("repoCount").textContent = reposWithCommits;
         } catch (error) {
           console.error("Failed to load repos:", error);
           // Don't reference 'data' here since it might not exist
@@ -742,6 +736,18 @@
         `;
         }
       }
+
+      function updateRepositoryFilter() {
+    const repoFilter = document.getElementById('repoFilter');
+    selectedRepository = repoFilter.value || null;
+    
+    if (selectedRepository) {
+        const repoName = selectedRepository.split(/[/\\]/).pop();
+        addMessage('ai', `Now filtering by repository: ${repoName}`);
+    } else {
+        addMessage('ai', 'Now searching all repositories');
+    }
+}
 
       function selectRepository(path) {
         selectedRepository = path;
@@ -1067,58 +1073,63 @@
 
       function addAIResponse(data) {
         const chatContainer = document.getElementById("chatContainer");
-        const messageDiv = document.createElement("div");
-        messageDiv.className = "message ai";
+    const messageDiv = document.createElement("div");
+    messageDiv.className = "message ai";
 
-        let sourcesHtml = "";
-        if (data.sources && data.sources.length > 0) {
-          sourcesHtml =
-            '<div style="margin-top: 15px;"><strong>📚 Sources:</strong></div>';
-          data.sources.forEach((source) => {
-            const repoName = source.repository
-              ? source.repository.split(/[/\\]/).pop()
-              : "unknown";
-            sourcesHtml += `
-                        <div class="source-card">
-                            <div class="commit">${
-                              source.commit || "No commit"
-                            }</div>
-                            <div class="message">${escapeHtml(
-                              source.content
-                            )}</div>
-                            <div class="author">${escapeHtml(
-                              source.author
-                            )} • ${formatDate(source.timestamp)}</div>
-                            <div class="repository">Repository: ${escapeHtml(
-                              repoName
-                            )}</div>
-                        </div>
-                    `;
-          });
+    // Filter sources by selected repository if one is selected
+    let sources = data.sources || [];
+    let answer = data.answer;
+    
+    if (selectedRepository) {
+        const repoName = selectedRepository.split(/[/\\]/).pop();
+        const filteredSources = sources.filter(s => 
+            s.repository && s.repository.toLowerCase().includes(repoName.toLowerCase())
+        );
+        
+        if (filteredSources.length === 0) {
+            answer = `No results found in ${repoName}. Showing results from all repositories instead.`;
+        } else if (filteredSources.length < sources.length) {
+            answer = `Found ${filteredSources.length} results in ${repoName} (filtered from ${sources.length} total results)`;
+            sources = filteredSources;
         }
+    }
 
-        const confidenceClass =
-          data.confidence > 0.7
-            ? "confidence-high"
-            : data.confidence > 0.4
-            ? "confidence-medium"
-            : "confidence-low";
-        const confidencePercent = Math.round(data.confidence * 100);
-
-        messageDiv.innerHTML = `
-                <div class="avatar ai-avatar">CK</div>
-                <div class="message-content">
-                    <div>${escapeHtml(data.answer)}</div>
-                    ${sourcesHtml}
-                    <div class="confidence-badge ${confidenceClass}">
-                        ${confidencePercent}% Confidence
+    let sourcesHtml = "";
+    if (sources.length > 0) {
+        sourcesHtml = '<div style="margin-top: 15px;"><strong>📚 Sources:</strong></div>';
+        sources.forEach((source) => {
+            const repoName = source.repository
+                ? source.repository.split(/[/\\]/).pop()
+                : "unknown";
+            sourcesHtml += `
+                <div class="source-card">
+                    <div class="commit">${source.commit || "No commit"}</div>
+                    <div class="message">${escapeHtml(source.content)}</div>
+                    <div class="author">${escapeHtml(source.author)} • ${formatDate(source.timestamp)}</div>
+                    <div class="repository" style="font-size: 11px; color: #999; margin-top: 5px;">
+                        Repository: ${escapeHtml(repoName)}
                     </div>
                 </div>
             `;
+        });
+    }
 
-        chatContainer.appendChild(messageDiv);
-        chatContainer.scrollTop = chatContainer.scrollHeight;
-      }
+    const confidencePercent = Math.round((data.confidence || 0) * 100);
+
+    messageDiv.innerHTML = `
+        <div class="avatar ai-avatar">CK</div>
+        <div class="message-content">
+            <div>${escapeHtml(answer)}</div>
+            ${sourcesHtml}
+            <div class="confidence-badge confidence-high">
+                ${confidencePercent}% Confidence
+            </div>
+        </div>
+    `;
+
+    chatContainer.appendChild(messageDiv);
+    chatContainer.scrollTop = chatContainer.scrollHeight;
+}
 
       function showLoading() {
         const chatContainer = document.getElementById("chatContainer");
