@@ -47,6 +47,33 @@ services:
       - NEO4J_AUTH=neo4j/contextkeeper2024
     restart: unless-stopped
 
+  frontend:
+    build: ./frontend
+    container_name: context-keeper-frontend
+    ports:
+      - "3000:3000"
+    environment:
+      - NEXT_PUBLIC_API_URL=http://backend:8000
+    depends_on:
+      - backend
+    
+  backend:
+    build: ./backend
+    container_name: context-keeper-backend
+    ports:
+      - "8000:8000"
+    # ... rest of backend config
+
+  nginx:
+    image: nginx:alpine
+    container_name: context-keeper-nginx
+    ports:
+      - "80:80"
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf
+    depends_on:
+      - frontend
+      - backend
 networks:
   default:
     name: context-keeper-network
