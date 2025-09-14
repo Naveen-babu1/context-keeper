@@ -38,13 +38,15 @@ services:
     restart: unless-stopped
 
   ollama:
-    image: ollama/ollama:latest
-    container_name: context-keeper-ollama
-    ports:
-      - "11434:11434"
-    volumes:
-      - ollama_data:/root/.ollama
-    restart: unless-stopped
+  image: ollama/ollama:latest
+  container_name: context-keeper-ollama
+  ports:
+    - "11434:11434"
+  volumes:
+    - D:/ollama_models:/root/.ollama  # Changed to D drive
+  environment:
+    - OLLAMA_KEEP_ALIVE=24h
+  restart: unless-stopped
 
 # Define named volumes (Docker manages these)
 volumes:

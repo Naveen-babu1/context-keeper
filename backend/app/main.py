@@ -281,13 +281,35 @@ async def search_similar(query: str, limit: int = 10, repository: str = None) ->
     
 async def generate_intelligent_answer(query: str, events: List[Dict]) -> str:
     """Generate truly intelligent answers about any repository"""
-    logger.info(f"Generating answer for query: {query}, with {len(events)} events")
     if not events:
         return "No relevant events found."
     
+    # First, try to use LLM for ALL queries
+    context = "Repository commits:\n"
+    for i, event in enumerate(events[:10], 1):
+        context += f"{i}. {event.get('message', '')}\n"
+        if event.get('files_changed'):
+            context += f"   Files: {', '.join(event.get('files_changed', [])[:3])}\n"
+    
+    # Always try LLM first
+    prompt = f"""You are analyzing a git repository. Based on these commits, answer this question: {query}
+
+{context}
+
+Provide a detailed, technical answer that explains what changed, why it matters, and any patterns you notice."""
+    
+    logger.info(f"Calling LLM with prompt length: {len(prompt)}")
+    llm_response = await query_llm(prompt)
+    
+    if llm_response:
+        logger.info(f"LLM responded with {len(llm_response)} characters")
+        return llm_response
+    
+    # Only use pattern matching as fallback
+    logger.info("LLM not available, using pattern-based fallback")
     query_lower = query.lower()
     
-    # Check for overview/summary requests
+    # Your existing pattern matching code
     if any(word in query_lower for word in ["overview", "summarize", "summary", "tell about", "describe", "what is"]):
         logger.info("Detected summary request")
         return await generate_repository_overview(events)
@@ -310,36 +332,322 @@ async def generate_intelligent_answer(query: str, events: List[Dict]) -> str:
     elif "what changed" in query_lower or "difference" in query_lower:
         return await analyze_changes(events, query)
     
-    # Default: provide intelligent listing with context
-    return await generate_contextual_listing(query, events)
+    
+    # Default fallback
+    return f"Found {len(events)} relevant commits:\n" + \
+           "\n".join(f"- {e.get('message', '')[:80]}" for e in events[:5])
+    
+    # # Default: provide intelligent listing with context
+    # return await generate_contextual_listing(query, events)
 
 async def generate_repository_overview(events: List[Dict]) -> str:
     """Generate comprehensive overview for any repository"""
-    # [Copy the entire function from document 1]
+    if not events:
+        return "No repository data available."
+    
+    # Extract repository name dynamically
+    repo_path = events[0].get("repository", "unknown")
+    repo_name = repo_path.split('\\')[-1] if '\\' in repo_path else repo_path.split('/')[-1]
+    
+    # Analyze commits
+    total_commits = len(events)
+    authors = set(e.get("author", "") for e in events)
+    files_touched = set()
+    for e in events:
+        files_touched.update(e.get("files_changed", []))
+    
+    # Categorize commits by type
+    commit_types = {
+        "features": [],
+        "fixes": [],
+        "refactors": [],
+        "docs": [],
+        "tests": [],
+        "builds": [],
+        "other": []
+    }
+    
+    for event in events:
+        msg = event.get("message", "").lower()
+        categorized = False
+        
+        if any(keyword in msg for keyword in ["feat", "add", "implement", "create", "new"]):
+            commit_types["features"].append(event)
+            categorized = True
+        elif any(keyword in msg for keyword in ["fix", "bug", "patch", "resolve", "correct"]):
+            commit_types["fixes"].append(event)
+            categorized = True
+        elif any(keyword in msg for keyword in ["refactor", "improve", "enhance", "optimize"]):
+            commit_types["refactors"].append(event)
+            categorized = True
+        elif any(keyword in msg for keyword in ["doc", "readme", "comment"]):
+            commit_types["docs"].append(event)
+            categorized = True
+        elif any(keyword in msg for keyword in ["test", "spec"]):
+            commit_types["tests"].append(event)
+            categorized = True
+        elif any(keyword in msg for keyword in ["build", "deps", "dependency", "version"]):
+            commit_types["builds"].append(event)
+            categorized = True
+        
+        if not categorized:
+            commit_types["other"].append(event)
+    
+    # Get date range
+    date_range = ""
+    if events:
+        timestamps = [e.get("timestamp", "") for e in events if e.get("timestamp")]
+        if timestamps:
+            timestamps.sort()
+            first_date = timestamps[0][:10] if timestamps[0] else "unknown"
+            last_date = timestamps[-1][:10] if timestamps[-1] else "unknown"
+            date_range = f"from {first_date} to {last_date}"
+    
+    # Infer project type from files
+    project_type = infer_project_type(files_touched)
+    
+    # Build overview
+    overview = f"""## {repo_name} Repository Overview
+
+**Project Type:** {project_type}
+
+**Repository Statistics:**
+- Total Commits: {total_commits}
+- Contributors: {len(authors)}
+- Files Modified: {len(files_touched)}
+- Development Period: {date_range}
+
+**Development Activity Breakdown:**"""
+    
+    # Add non-empty categories
+    for category, commits in commit_types.items():
+        if commits and category != "other":
+            percentage = len(commits) * 100 // max(total_commits, 1)
+            emoji = get_category_emoji(category)
+            overview += f"\n- {emoji} {category.title()}: {len(commits)} commits ({percentage}%)"
+    
+    if commit_types["other"]:
+        overview += f"\n- 📝 Other: {len(commit_types['other'])} commits"
+    
+    # Analyze technology stack
+    tech_stack = analyze_tech_stack(files_touched)
+    if tech_stack:
+        overview += "\n\n**Technology Stack:**"
+        for tech, count in tech_stack[:5]:
+            overview += f"\n- {tech}: {count} files"
+    
+    # Key areas of development
+    if commit_types["features"]:
+        overview += "\n\n**Key Features Developed:**"
+        for feat in commit_types["features"][:5]:
+            msg = feat.get("message", "")
+            msg = msg.replace('\n', ' ').strip()
+            overview += f"\n- {msg[:80]}"
+    
+    # Development velocity
+    overview += "\n\n**Development Insights:**"
+    overview += analyze_velocity(events)
+    
+    # Recent focus
+    if len(events) > 5:
+        recent = events[:5]
+        overview += "\n\n**Recent Development Focus:**"
+        recent_types = set()
+        for event in recent:
+            msg = event.get("message", "").lower()
+            if "fix" in msg:
+                recent_types.add("bug fixing")
+            elif "feat" in msg:
+                recent_types.add("feature development")
+            elif "refactor" in msg:
+                recent_types.add("code refactoring")
+        
+        if recent_types:
+            overview += f"\nCurrently focused on: {', '.join(recent_types)}"
+    
+    return overview
 
 def infer_project_type(files: set) -> str:
     """Infer project type from file extensions"""
-    # [Copy the entire function from document 1]
+    """Infer project type from file extensions"""
+    extensions = {}
+    for file in files:
+        if '.' in file:
+            ext = file.split('.')[-1].lower()
+            extensions[ext] = extensions.get(ext, 0) + 1
+    
+    if not extensions:
+        return "General Software Project"
+    
+    # Sort by frequency
+    top_ext = sorted(extensions.items(), key=lambda x: x[1], reverse=True)
+    
+    # Infer based on dominant extensions
+    project_indicators = {
+        "js": "JavaScript/Node.js",
+        "ts": "TypeScript",
+        "py": "Python",
+        "java": "Java",
+        "cpp": "C++",
+        "cs": "C#",
+        "go": "Go",
+        "rs": "Rust",
+        "rb": "Ruby",
+        "php": "PHP",
+        "swift": "Swift/iOS",
+        "kt": "Kotlin/Android",
+        "vue": "Vue.js",
+        "jsx": "React",
+        "tsx": "React TypeScript"
+    }
+    
+    for ext, _ in top_ext:
+        if ext in project_indicators:
+            return f"{project_indicators[ext]} Project"
+    
+    # Check for web project
+    web_extensions = {"html", "css", "js", "jsx", "tsx", "vue", "scss", "sass"}
+    if any(ext in web_extensions for ext, _ in top_ext[:5]):
+        return "Web Application"
+    
+    # Check for mobile
+    mobile_extensions = {"swift", "kt", "java", "xml"}
+    if any(ext in mobile_extensions for ext, _ in top_ext[:5]):
+        return "Mobile Application"
+    
+    return "Software Project"
 
 def analyze_tech_stack(files: set) -> list:
     """Analyze technology stack from files"""
-    # [Copy the entire function from document 1]
+    """Analyze technology stack from files"""
+    tech_categories = {
+        "Frontend": ["html", "css", "js", "jsx", "tsx", "vue", "scss"],
+        "Backend": ["py", "java", "go", "rb", "php", "cs"],
+        "Configuration": ["json", "yaml", "yml", "toml", "ini"],
+        "Documentation": ["md", "txt", "rst", "doc"],
+        "Testing": ["test.js", "spec.js", "test.py", "spec.ts"],
+        "Database": ["sql", "db", "sqlite"],
+        "DevOps": ["dockerfile", "docker-compose.yml", "jenkinsfile"]
+    }
+    
+    stack = {}
+    for file in files:
+        file_lower = file.lower()
+        for category, extensions in tech_categories.items():
+            if any(ext in file_lower for ext in extensions):
+                stack[category] = stack.get(category, 0) + 1
+    
+    return sorted(stack.items(), key=lambda x: x[1], reverse=True)
 
 def get_category_emoji(category: str) -> str:
     """Get emoji for commit category"""
-    # [Copy the entire function from document 1]
+    """Get emoji for commit category"""
+    emojis = {
+        "features": "🚀",
+        "fixes": "🐛",
+        "refactors": "🔧",
+        "docs": "📚",
+        "tests": "🧪",
+        "builds": "📦"
+    }
+    return emojis.get(category, "📝")
 
 def analyze_velocity(events: List[Dict]) -> str:
     """Analyze development velocity"""
-    # [Copy the entire function from document 1]
+    """Analyze development velocity"""
+    if len(events) < 2:
+        return "\n- Limited data for velocity analysis"
+    
+    from datetime import datetime
+    timestamps = []
+    for event in events:
+        ts = event.get("timestamp", "")
+        if ts:
+            try:
+                timestamps.append(datetime.fromisoformat(ts.replace("Z", "")))
+            except:
+                pass
+    
+    if len(timestamps) < 2:
+        return "\n- Unable to calculate velocity"
+    
+    # Calculate time span
+    time_span = (timestamps[0] - timestamps[-1]).days
+    if time_span == 0:
+        time_span = 1
+    
+    commits_per_day = len(events) / time_span
+    
+    insights = f"\n- Average velocity: {commits_per_day:.1f} commits per day"
+    
+    if commits_per_day > 5:
+        insights += "\n- High development activity indicates active project"
+    elif commits_per_day > 1:
+        insights += "\n- Steady development pace"
+    else:
+        insights += "\n- Low commit frequency, possibly maintenance mode"
+    
+    return insights
 
 async def explain_development_decisions(events: List[Dict], query: str) -> str:
     """Explain why certain development decisions were made"""
-    # [Copy the entire function from document 1]
+    """Explain why certain development decisions were made"""
+    if not events:
+        return "No events to analyze."
+    
+    explanation = "Based on the commit history, here's the analysis:\n\n"
+    
+    # Look for patterns that indicate reasons
+    fixes = [e for e in events if "fix" in e.get("message", "").lower()]
+    features = [e for e in events if "feat" in e.get("message", "").lower() or "add" in e.get("message", "").lower()]
+    refactors = [e for e in events if "refactor" in e.get("message", "").lower()]
+    
+    if fixes:
+        explanation += "**Bug Fixes Indicate:**\n"
+        explanation += "- Ongoing maintenance and quality improvement\n"
+        explanation += "- Response to user feedback or testing\n"
+        common_fix_areas = analyze_common_areas(fixes)
+        if common_fix_areas:
+            explanation += f"- Problem areas: {', '.join(common_fix_areas[:3])}\n"
+        explanation += "\n"
+    
+    if features:
+        explanation += "**Feature Development Shows:**\n"
+        explanation += "- Active growth and expansion\n"
+        explanation += "- Response to requirements or user needs\n"
+        feature_areas = analyze_common_areas(features)
+        if feature_areas:
+            explanation += f"- Focus areas: {', '.join(feature_areas[:3])}\n"
+        explanation += "\n"
+    
+    if refactors:
+        explanation += "**Refactoring Suggests:**\n"
+        explanation += "- Code quality improvements\n"
+        explanation += "- Technical debt reduction\n"
+        explanation += "- Performance optimization efforts\n"
+    
+    return explanation
 
 def analyze_common_areas(events: List[Dict]) -> List[str]:
     """Analyze common areas from commit messages and files"""
-    # [Copy the entire function from document 1]
+    areas = {}
+    for event in events:
+        # Extract from message
+        msg = event.get("message", "").lower()
+        words = msg.split()
+        for word in words:
+            if len(word) > 4 and word.isalpha():  # Meaningful words
+                areas[word] = areas.get(word, 0) + 1
+        
+        # Extract from files
+        for file in event.get("files_changed", []):
+            if '/' in file:
+                component = file.split('/')[0]
+                areas[component] = areas.get(component, 0) + 1
+    
+    # Sort by frequency
+    sorted_areas = sorted(areas.items(), key=lambda x: x[1], reverse=True)
+    return [area for area, _ in sorted_areas[:5] if area not in ["the", "and", "for", "with", "from"]]
 
 # Add these missing helper functions that are referenced but not in your current code:
 async def generate_timeline_summary(events: List[Dict]) -> str:
@@ -437,19 +745,26 @@ async def generate_contextual_listing(query: str, events: List[Dict]) -> str:
 
 async def query_llm(prompt: str) -> str:
     """Query local LLM using Ollama"""
+    logger.info(f"Calling Ollama with prompt: {prompt[:100]}...")
     try:
         async with httpx.AsyncClient() as client:
             response = await client.post(
                 "http://localhost:11434/api/generate",
                 json={
-                    "model": "mistral:7b-instruct",
+                    "model": "qwen2.5-coder:1.5b",
                     "prompt": prompt,
                     "stream": False
                 },
-                timeout=30.0
+                timeout=60.0
             )
             if response.status_code == 200:
                 return response.json().get("response", "")
+                logger.info(f"Ollama responded successfully: {len(result)} chars")
+                return result
+            else:
+                logger.error(f"Ollama error: {response.status_code} - {response.text}")
+    except httpx.TimeoutException:
+        logger.error("Ollama timeout - increase timeout or use smaller prompts")
     except Exception as e:
         logger.warning(f"LLM query failed: {e}")
     return ""
@@ -482,6 +797,32 @@ async def check_commit_exists(commit_hash: str) -> bool:
         return False
 
 # ============= Endpoints =============
+@app.get("/api/test-llm")
+async def test_llm():
+    """Test if Ollama LLM is working"""
+    try:
+        prompt = "Explain what Context Keeper does in one sentence."
+        response = await query_llm(prompt)
+        
+        if response:
+            return {
+                "status": "working",
+                "llm_response": response,
+                "service": "ollama"
+            }
+        else:
+            return {
+                "status": "not_working",
+                "message": "Ollama returned empty response",
+                "suggestion": "Check if Ollama is running: docker ps | grep ollama"
+            }
+    except Exception as e:
+        return {
+            "status": "error",
+            "error": str(e),
+            "suggestion": "Start Ollama with: docker run -d -p 11434:11434 ollama/ollama"
+        }
+    
 @app.get("/")
 async def serve_ui():
     html_path = os.path.join(static_dir, "index.html")
