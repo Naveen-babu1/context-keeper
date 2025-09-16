@@ -195,6 +195,17 @@ def save_repositories():
     except Exception as e:
         logger.error(f"Failed to save repositories: {e}")
 
+def normalize_repo_path(path: str) -> str:
+    """Normalize repository path to prevent duplicates"""
+    # Convert to absolute path and normalize
+    normalized = str(Path(path).resolve())
+    # Remove trailing slashes
+    normalized = normalized.rstrip('/\\')
+    # Convert to lowercase for Windows compatibility
+    if os.name == 'nt':  # Windows
+        normalized = normalized.lower()
+    return normalized
+
 def load_repositories():
     """Load repository list from file"""
     global indexed_repositories
@@ -916,6 +927,35 @@ async def select_repository(request: dict):
         return {"status": "success", "repository": repository, "selected": selected}
     else:
         raise HTTPException(status_code=404, detail="Repository not found")
+    
+
+@app.delete("/api/repositories/clear")
+async def clear_all_repositories():
+    """Clear all repository data and reset"""
+    global indexed_repositories
+    
+    # Clear from memory
+    indexed_repositories = {}
+    
+    # Clear from Qdrant (optional - keeps the data but removes repo tracking)
+    # You might want to keep the commits and just reset the repo list
+    
+    # Save empty state
+    save_repositories()
+    
+    return {"status": "success", "message": "All repositories cleared"}
+
+@app.delete("/api/repositories/{repo_path:path}")
+async def delete_repository(repo_path: str):
+    """Delete a specific repository"""
+    global indexed_repositories
+    
+    if repo_path in indexed_repositories:
+        del indexed_repositories[repo_path]
+        save_repositories()
+        return {"status": "success", "message": f"Repository {repo_path} deleted"}
+    else:
+        raise HTTPException(status_code=404, detail="Repository not found")
 
 @app.post("/api/analyze/commit")
 async def analyze_commit(request: dict):
@@ -1051,6 +1091,11 @@ async def ingest_git_event(event: Dict[str, Any], background_tasks: BackgroundTa
     try:
         commit_hash = event.get("commit_hash", "")
         repository = event.get("repository", "unknown")
+
+        # Normalize the repository path
+        if repository != "unknown":
+            repository = normalize_repo_path(repository)
+            event["repository"] = repository  # Update the event with normalized path
         
         # Track repository
         if repository != "unknown" and repository not in indexed_repositories:
@@ -1058,7 +1103,8 @@ async def ingest_git_event(event: Dict[str, Any], background_tasks: BackgroundTa
                 "path": repository,
                 "first_indexed": datetime.now().isoformat(),
                 "last_updated": datetime.now().isoformat(),
-                "commit_count": 0
+                "commit_count": 0,
+                "selected": True
             }
         
         if repository in indexed_repositories:
@@ -1412,6 +1458,53 @@ async def clear_all_data():
     
     return {"status": "success", "message": "Memory cleared (no Qdrant)"}
 
+@app.post("/api/repositories/cleanup")
+async def cleanup_orphaned_commits():
+    """Remove commits from repositories that are no longer tracked"""
+    if not qdrant_client:
+        return {"status": "error", "message": "Qdrant not available"}
+    
+    try:
+        # Get all unique repositories from Qdrant
+        all_points = []
+        offset = None
+        while True:
+            results = qdrant_client.scroll(
+                collection_name=events_collection,
+                limit=100,
+                offset=offset,
+                with_payload=True,
+                with_vectors=False
+            )
+            points, next_offset = results
+            all_points.extend(points)
+            if next_offset is None:
+                break
+            offset = next_offset
+        
+        # Find orphaned commits (from repos not in indexed_repositories)
+        orphaned_ids = []
+        for point in all_points:
+            repo = point.payload.get("repository", "")
+            if repo and repo not in indexed_repositories:
+                orphaned_ids.append(point.id)
+        
+        # Delete orphaned commits
+        if orphaned_ids:
+            qdrant_client.delete(
+                collection_name=events_collection,
+                points_selector=orphaned_ids
+            )
+            
+        return {
+            "status": "success", 
+            "removed": len(orphaned_ids),
+            "message": f"Removed {len(orphaned_ids)} orphaned commits"
+        }
+        
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
 @app.post("/api/cleanup")
 async def cleanup_bad_entries():
     """Remove entries without commit hashes"""
@@ -1586,6 +1679,40 @@ async def get_timeline(days: int = 7, limit: int = 50):
         }
     }
 
+@app.post("/api/repositories/deduplicate")
+async def deduplicate_repositories():
+    """Remove duplicate repositories with same name but different paths"""
+    global indexed_repositories
+    
+    seen = {}
+    to_remove = []
+    
+    for path, repo in indexed_repositories.items():
+        normalized = normalize_repo_path(path)
+        
+        if normalized in seen:
+            # Keep the one with more commits
+            if repo.get("commit_count", 0) > seen[normalized]["count"]:
+                to_remove.append(seen[normalized]["path"])
+                seen[normalized] = {"path": path, "count": repo.get("commit_count", 0)}
+            else:
+                to_remove.append(path)
+        else:
+            seen[normalized] = {"path": path, "count": repo.get("commit_count", 0)}
+    
+    # Remove duplicates
+    for path in to_remove:
+        if path in indexed_repositories:
+            del indexed_repositories[path]
+    
+    save_repositories()
+    
+    return {
+        "status": "success",
+        "removed": len(to_remove),
+        "remaining": len(indexed_repositories)
+    }
+
 @app.post("/api/ingest/start")
 async def start_ingestion(request: dict):
     """Start ingesting a repository"""
@@ -1596,9 +1723,18 @@ async def start_ingestion(request: dict):
     if not repo_path:
         raise HTTPException(status_code=400, detail="repo_path required")
     
-    if repo_path not in indexed_repositories:
-        indexed_repositories[repo_path] = {
-            "path": repo_path,
+    # Normalize the path
+    normalized_path = normalize_repo_path(repo_path)
+    
+    # Check if already exists with different normalization
+    for existing_path in list(indexed_repositories.keys()):
+        if normalize_repo_path(existing_path) == normalized_path and existing_path != normalized_path:
+            # Remove the old entry
+            del indexed_repositories[existing_path]
+
+    if normalized_path not in indexed_repositories:
+        indexed_repositories[normalized_path] = {
+            "path": normalized_path,
             "first_indexed": datetime.now().isoformat(),
             "last_updated": datetime.now().isoformat(),
             "commit_count": 0,
@@ -1667,6 +1803,29 @@ async def get_ingestion_status():
     """Get current ingestion status"""
     return ingestion_status
 
+@app.post("/api/reset")
+async def reset_everything():
+    """Complete reset - removes all data"""
+    global indexed_repositories, git_events
+    
+    # Clear memory
+    indexed_repositories = {}
+    git_events = []
+    save_repositories()
+    
+    # Clear Qdrant completely
+    if qdrant_client:
+        try:
+            qdrant_client.delete_collection(events_collection)
+            qdrant_client.create_collection(
+                collection_name=events_collection,
+                vectors_config=VectorParams(size=384, distance=Distance.COSINE)
+            )
+        except:
+            pass
+    
+    return {"status": "success", "message": "Complete reset done"}
+
 @app.get("/api/repos")
 async def get_indexed_repos():
     """Get list of indexed repositories"""
@@ -1704,6 +1863,7 @@ async def api_info():
 
 @app.get("/api/stats")
 async def get_statistics():
+    """Get accurate statistics based on active repositories"""
     stats = {
         "events": {
             "in_memory": len(git_events) + len(context_events),
@@ -1712,12 +1872,19 @@ async def get_statistics():
         "repositories": len(indexed_repositories),  # Show repository count
         "queries_made": 0 # Placeholder for future tracking
     }
+    # Calculate total commits only from tracked repositories
+    total_commits = 0
+    for repo_path, repo_info in indexed_repositories.items():
+        total_commits += repo_info.get("commit_count", 0)
     
     if qdrant_client:
         try:
             collection_info = qdrant_client.get_collection(events_collection)
-            # Use points_count instead of vectors_count
-            stats["events"]["in_qdrant"] = collection_info.points_count
+            # Only count if we're showing all repos
+            if len(indexed_repositories) > 0:
+                stats["events"]["in_qdrant"] = total_commits
+            else:
+                stats["events"]["in_qdrant"] = collection_info.points_count
         except:
             pass
     

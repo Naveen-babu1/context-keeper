@@ -56,17 +56,6 @@ export default function Home() {
       </header>
 
       <div className="container mx-auto px-6 py-8 max-w-7xl">
-        {/* Welcome Card */}
-        {/* <div className="text-center mb-12">
-          <div className="inline-flex p-4 bg-gray-800/50 rounded-2xl mb-6">
-            <Brain className="w-16 h-16 text-emerald-400" />
-          </div>
-          <h2 className="text-3xl font-bold mb-4">Welcome to Context Keeper</h2>
-          <p className="text-gray-400 max-w-2xl mx-auto">
-            I'm an AI assistant trained on your complete codebase. 
-            Ask me anything about your repositories, commits, or architecture!
-          </p>
-        </div> */}
 
         {/* Stats */}
         <div className="grid grid-cols-3 gap-6 mb-8">
