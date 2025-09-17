@@ -290,6 +290,31 @@ async def search_similar(query: str, limit: int = 10, repository: str = None) ->
         logger.error(f"Search failed: {e}")
         return []
     
+async def search_similar_with_temporal_priority(query: str, limit: int = 10, repository: str = None, temporal_priority: bool = False) -> List[Dict[str, Any]]:
+    """Enhanced search with option for temporal priority"""
+    
+    if temporal_priority:
+        # For temporal queries, prioritize chronological order over semantic similarity
+        if not qdrant_client or not embedding_model:
+            # Fallback to in-memory search, sorted by timestamp
+            filtered_events = git_events
+            if repository:
+                filtered_events = [e for e in git_events if repository in e.get("repository", "")]
+            
+            # Sort by timestamp (newest first)
+            sorted_events = sorted(filtered_events, key=lambda x: x.get('timestamp', ''), reverse=True)
+            return sorted_events[:limit]
+        
+        # Use semantic search but re-sort by timestamp
+        semantic_results = await search_similar(query, limit * 2, repository)  # Get more results
+        
+        # Sort by timestamp and take top results
+        temporal_results = sorted(semantic_results, key=lambda x: x.get('timestamp', ''), reverse=True)
+        return temporal_results[:limit]
+    else:
+        # Use regular semantic search
+        return await search_similar(query, limit, repository)
+    
 async def generate_intelligent_answer(query: str, events: List[Dict]) -> str:
     """Enhanced intelligent answer generation with better commit handling"""
     if not events:
@@ -301,12 +326,19 @@ async def generate_intelligent_answer(query: str, events: List[Dict]) -> str:
     query_type = classify_query_type(query_lower)
     
     # Handle specific query types
-    if query_type == "repository_summary":
+    if query_type == "latest_commit":
+        return await get_latest_commit(events)
+    elif query_type == "recent_changes":
+        return await get_recent_changes(events)
+    elif query_type == "repository_summary":
         return await generate_enhanced_repository_summary(events, query)
     elif query_type == "list_commits":
         return await list_all_commits(events, query)
     elif query_type == "specific_commit":
         return await analyze_specific_commit(events, query)
+    elif query_type == "general_commit_query":
+        # For general commit queries, use semantic search but show latest if no specific match
+        return await handle_general_commit_query(events, query)
     elif query_type == "commit_comparison":
         return await compare_commits(events, query)
     elif query_type == "timeline":
@@ -322,20 +354,124 @@ async def generate_intelligent_answer(query: str, events: List[Dict]) -> str:
     # Fallback to pattern matching
     return await generate_fallback_response(query, events)
 
+async def generate_detailed_timeline(events: List[Dict], query: str) -> str:
+    """Generate detailed timeline of development"""
+    if not events:
+        return "No timeline data available."
+    
+    # Sort events chronologically (newest first)
+    sorted_events = sorted(events, key=lambda x: x.get('timestamp', ''), reverse=True)
+    
+    from datetime import datetime
+    timeline = defaultdict(list)
+    
+    for event in sorted_events:
+        timestamp = event.get("timestamp", "")
+        if timestamp:
+            try:
+                dt = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
+                date = dt.strftime("%Y-%m-%d")
+                timeline[date].append(event)
+            except:
+                pass
+    
+    result = "# Development Timeline\n\n"
+    sorted_dates = sorted(timeline.items(), reverse=True)[:14]  # Last 2 weeks
+    
+    for date, commits in sorted_dates:
+        result += f"## {date} ({len(commits)} commits)\n"
+        for commit in commits:
+            commit_hash = commit.get('commit_hash', 'unknown')[:8]
+            message = commit.get('message', 'No message')[:60]
+            author = commit.get('author', 'Unknown').split('<')[0].strip()
+            result += f"- **[{commit_hash}]** {message} - {author}\n"
+        result += "\n"
+    
+    return result
+
+async def analyze_author_activity(events: List[Dict], query: str) -> str:
+    """Analyze author activity and contributions"""
+    if not events:
+        return "No author data available."
+    
+    # Analyze authors
+    author_stats = {}
+    for event in events:
+        author = event.get('author', 'Unknown').split('<')[0].strip()
+        if author not in author_stats:
+            author_stats[author] = {
+                'commits': 0,
+                'files_changed': set(),
+                'recent_activity': []
+            }
+        
+        author_stats[author]['commits'] += 1
+        author_stats[author]['files_changed'].update(event.get('files_changed', []))
+        author_stats[author]['recent_activity'].append({
+            'hash': event.get('commit_hash', '')[:8],
+            'message': event.get('message', '')[:50],
+            'timestamp': event.get('timestamp', '')
+        })
+    
+    # Sort by commit count
+    sorted_authors = sorted(author_stats.items(), key=lambda x: x[1]['commits'], reverse=True)
+    
+    result = "# Author Activity Analysis\n\n"
+    
+    for i, (author, stats) in enumerate(sorted_authors[:10], 1):
+        files_count = len(stats['files_changed'])
+        result += f"## {i}. {author}\n"
+        result += f"**Commits:** {stats['commits']}\n"
+        result += f"**Files Modified:** {files_count}\n"
+        result += f"**Recent Activity:**\n"
+        
+        for activity in stats['recent_activity'][:3]:
+            result += f"- [{activity['hash']}] {activity['message']}\n"
+        result += "\n"
+    
+    return result
+
+
+async def handle_general_commit_query(events: List[Dict], query: str) -> str:
+    """Handle general commit queries that don't specify a particular commit"""
+    # If query is very generic, show latest
+    generic_terms = ["commit", "show commit", "what commit", "tell me about commit"]
+    if any(term in query.lower() for term in generic_terms):
+        return await get_latest_commit(events)
+    
+    # Otherwise use semantic search
+    return await analyze_specific_commit(events, query)
+
 def classify_query_type(query_lower: str) -> str:
-    """Enhanced query classification"""
+    """Enhanced query classification with better temporal handling"""
+    
+    # Latest/Recent commit queries - should be chronological, not semantic
+    if any(phrase in query_lower for phrase in [
+        "latest commit", "most recent commit", "last commit", 
+        "newest commit", "recent commit", "show the latest"
+    ]):
+        return "latest_commit"
     
     # Repository summary queries
-    if any(word in query_lower for word in ["summarize", "summary", "overview", "describe repo", "tell me about", "what is this repo"]):
+    elif any(word in query_lower for word in ["summarize", "summary", "overview", "describe repo", "tell me about", "what is this repo"]):
         return "repository_summary"
     
     # List all commits queries
     elif any(phrase in query_lower for phrase in ["show all commits", "list commits", "all the commits", "every commit", "commit list"]):
         return "list_commits"
     
-    # Specific commit queries
-    elif any(word in query_lower for word in ["commit", "hash"]) and any(word in query_lower for word in ["show", "explain", "what", "analyze", "details"]):
-        return "specific_commit"
+    # Specific commit queries (by hash)
+    elif any(word in query_lower for word in ["commit"]) and any(word in query_lower for word in ["show", "explain", "what", "analyze", "details"]):
+        # Check if there's a hash-like string in the query
+        import re
+        if re.search(r'\b[a-fA-F0-9]{6,40}\b', query_lower):
+            return "specific_commit"
+        else:
+            return "general_commit_query"
+    
+    # Recent changes (should be chronological)
+    elif any(phrase in query_lower for phrase in ["recent changes", "what changed recently", "latest changes"]):
+        return "recent_changes"
     
     # Commit comparison queries
     elif any(phrase in query_lower for phrase in ["compare", "difference", "changed from", "vs", "versus"]):
@@ -350,6 +486,40 @@ def classify_query_type(query_lower: str) -> str:
         return "author_analysis"
     
     return "general"
+
+async def get_latest_commit(events: List[Dict]) -> str:
+    """Get the actual latest commit chronologically"""
+    if not events:
+        return "No commits found."
+    
+    # Sort by timestamp to get truly latest
+    sorted_events = sorted(events, key=lambda x: x.get('timestamp', ''), reverse=True)
+    latest = sorted_events[0]
+    
+    return await generate_detailed_commit_analysis(latest, events)
+
+async def get_recent_changes(events: List[Dict], limit: int = 5) -> str:
+    """Get recent changes chronologically"""
+    if not events:
+        return "No recent changes found."
+    
+    # Sort by timestamp to get truly recent
+    sorted_events = sorted(events, key=lambda x: x.get('timestamp', ''), reverse=True)
+    recent_events = sorted_events[:limit]
+    
+    result = f"# Recent Changes ({len(recent_events)} latest commits)\n\n"
+    
+    for i, event in enumerate(recent_events, 1):
+        commit_hash = event.get('commit_hash', 'unknown')[:8]
+        message = event.get('message', 'No message')
+        author = event.get('author', 'Unknown').split('<')[0].strip()
+        timestamp = format_timestamp(event.get('timestamp', ''))
+        files_count = len(event.get('files_changed', []))
+        
+        result += f"**{i}. [{commit_hash}]** {message}\n"
+        result += f"   👤 {author} • 📅 {timestamp} • 📁 {files_count} files\n\n"
+    
+    return result
 
 async def generate_enhanced_repository_summary(events: List[Dict], query: str) -> str:
     """Enhanced repository summary with comprehensive analysis"""
@@ -1666,10 +1836,21 @@ async def query_context(request: QueryRequest):
     try:
         query = request.query
         logger.info(f"Query: {query}, Repository: {request.repository}")
+        # Check if this is a temporal query
+        temporal_keywords = ["latest", "recent", "newest", "last", "most recent", "show the latest"]
+        is_temporal_query = any(keyword in query.lower() for keyword in temporal_keywords)
         
-        # Get relevant events
-        limit = 50 if "summar" in query.lower() else request.limit * 2
-        similar_events = await search_similar(query, limit, request.repository)
+        # Get relevant events with temporal priority if needed
+        if is_temporal_query:
+            similar_events = await search_similar_with_temporal_priority(
+                query, 
+                request.limit * 2, 
+                request.repository, 
+                temporal_priority=True
+            )
+        else:
+            limit = 50 if "summar" in query.lower() else request.limit * 2
+            similar_events = await search_similar(query, limit, request.repository)
         
         # Use the new generalized answer generation
         answer = await generate_intelligent_answer(query, similar_events)
@@ -1876,6 +2057,39 @@ async def generate_timeline_analysis(query: str, events: List[Dict]) -> str:
         analysis += "\n"
     
     return analysis
+
+async def compare_commits(events: List[Dict], query: str) -> str:
+    """Compare commits based on query"""
+    if len(events) < 2:
+        return "Need at least 2 commits to compare."
+    
+    # Take first two commits for comparison
+    commit1 = events[0]
+    commit2 = events[1]
+    
+    return await generate_commit_comparison(commit1, commit2)
+
+async def generate_fallback_response(query: str, events: List[Dict]) -> str:
+    """Generate fallback response when other methods fail"""
+    if not events:
+        return "No relevant events found."
+    
+    # Simple listing of relevant commits
+    result = f"Found {len(events)} relevant commits:\n\n"
+    
+    for i, event in enumerate(events[:5], 1):
+        commit_hash = event.get('commit_hash', 'unknown')[:8]
+        message = event.get('message', 'No message')[:60]
+        author = event.get('author', 'Unknown').split('<')[0].strip()
+        timestamp = format_timestamp(event.get('timestamp', ''))
+        
+        result += f"**{i}. [{commit_hash}]** {message}\n"
+        result += f"   Author: {author} • Date: {timestamp}\n\n"
+    
+    if len(events) > 5:
+        result += f"... and {len(events) - 5} more commits\n"
+    
+    return result
 
 async def get_repository_events(repository: str = None, limit: int = 100) -> List[Dict]:
     """Get events for a repository"""
