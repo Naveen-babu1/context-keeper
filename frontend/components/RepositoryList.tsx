@@ -5,6 +5,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Plus, GitBranch, Trash2, RefreshCw } from "lucide-react";
 import { api, contextKeeperAPI } from "../lib/api";
 import { AddRepositoryModal } from "./AddRepositoryModal";
+import { DeleteConfirmationModal } from "./DeleteConfirmationModal";
 
 interface RepositoryListProps {
   selectedRepo: string | null;
@@ -16,6 +17,9 @@ export function RepositoryList({
   onSelectRepo,
 }: RepositoryListProps) {
   const [showAddModal, setShowAddModal] = useState(false);
+  const [showDeleteModal, setShowDeleteModal] = useState(false);
+  const [repositoryToDelete, setRepositoryToDelete] = useState<string | null>(null);
+  const [isDeleting, setIsDeleting] = useState(false);
   const queryClient = useQueryClient();
 
   const { data, isLoading, refetch } = useQuery({
@@ -31,18 +35,37 @@ export function RepositoryList({
     }, 2000);
   };
 
-  const handleDeleteRepository = async (repoPath: string) => {
-    if (confirm(`Delete repository ${repoPath}?`)) {
-      try {
-        await api.delete(`/api/repositories/${encodeURIComponent(repoPath)}`);
-        refetch();
-        if (selectedRepo === repoPath) {
-          onSelectRepo(null);
-        }
-      } catch (error) {
-        console.error("Failed to delete repository:", error);
+  const handleDeleteClick = (repoPath: string) => {
+    setRepositoryToDelete(repoPath);
+    setShowDeleteModal(true);
+  };
+
+  const handleDeleteConfirm = async () => {
+    if (!repositoryToDelete) return;
+    
+    setIsDeleting(true);
+    try {
+      await api.delete(`/api/repositories/${encodeURIComponent(repositoryToDelete)}`);
+      refetch();
+      queryClient.invalidateQueries({ queryKey: ["stats"] });
+      
+      if (selectedRepo === repositoryToDelete) {
+        onSelectRepo(null);
       }
+      
+      // Close modal and reset state
+      setShowDeleteModal(false);
+      setRepositoryToDelete(null);
+    } catch (error) {
+      console.error("Failed to delete repository:", error);
+    } finally {
+      setIsDeleting(false);
     }
+  };
+
+  const handleDeleteCancel = () => {
+    setShowDeleteModal(false);
+    setRepositoryToDelete(null);
   };
 
   const handleClearAll = async () => {
@@ -165,7 +188,7 @@ export function RepositoryList({
                 </button>
 
                 <button
-                  onClick={() => handleDeleteRepository(path)}
+                  onClick={() => handleDeleteClick(path)}
                   className="opacity-0 group-hover:opacity-100 p-1 text-gray-400 hover:text-red-400 transition-all"
                 >
                   <Trash2 className="w-4 h-4" />
@@ -188,6 +211,13 @@ export function RepositoryList({
         isOpen={showAddModal}
         onClose={() => setShowAddModal(false)}
         onAdd={handleAddRepository}
+      />
+      <DeleteConfirmationModal
+        isOpen={showDeleteModal}
+        onClose={handleDeleteCancel}
+        onConfirm={handleDeleteConfirm}
+        repositoryName={repositoryToDelete?.split(/[/\\]/).pop() || ""}
+        isLoading={isDeleting}
       />
     </>
   );

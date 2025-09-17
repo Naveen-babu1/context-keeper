@@ -291,65 +291,525 @@ async def search_similar(query: str, limit: int = 10, repository: str = None) ->
         return []
     
 async def generate_intelligent_answer(query: str, events: List[Dict]) -> str:
-    """Generate truly intelligent answers about any repository"""
+    """Enhanced intelligent answer generation with better commit handling"""
     if not events:
         return "No relevant events found."
     
-    # First, try to use LLM for ALL queries
-    context = "Repository commits:\n"
-    for i, event in enumerate(events[:10], 1):
-        context += f"{i}. {event.get('message', '')}\n"
-        if event.get('files_changed'):
-            context += f"   Files: {', '.join(event.get('files_changed', [])[:3])}\n"
+    query_lower = query.lower()
     
-    # Always try LLM first
-    prompt = f"""You are analyzing a git repository. Based on these commits, answer this question: {query}
+    # Classify the query type for better handling
+    query_type = classify_query_type(query_lower)
+    
+    # Handle specific query types
+    if query_type == "repository_summary":
+        return await generate_enhanced_repository_summary(events, query)
+    elif query_type == "list_commits":
+        return await list_all_commits(events, query)
+    elif query_type == "specific_commit":
+        return await analyze_specific_commit(events, query)
+    elif query_type == "commit_comparison":
+        return await compare_commits(events, query)
+    elif query_type == "timeline":
+        return await generate_detailed_timeline(events, query)
+    elif query_type == "author_analysis":
+        return await analyze_author_activity(events, query)
+    
+    # Try LLM for complex queries
+    llm_response = await query_enhanced_llm(query, events)
+    if llm_response:
+        return llm_response
+    
+    # Fallback to pattern matching
+    return await generate_fallback_response(query, events)
+
+def classify_query_type(query_lower: str) -> str:
+    """Enhanced query classification"""
+    
+    # Repository summary queries
+    if any(word in query_lower for word in ["summarize", "summary", "overview", "describe repo", "tell me about", "what is this repo"]):
+        return "repository_summary"
+    
+    # List all commits queries
+    elif any(phrase in query_lower for phrase in ["show all commits", "list commits", "all the commits", "every commit", "commit list"]):
+        return "list_commits"
+    
+    # Specific commit queries
+    elif any(word in query_lower for word in ["commit", "hash"]) and any(word in query_lower for word in ["show", "explain", "what", "analyze", "details"]):
+        return "specific_commit"
+    
+    # Commit comparison queries
+    elif any(phrase in query_lower for phrase in ["compare", "difference", "changed from", "vs", "versus"]):
+        return "commit_comparison"
+    
+    # Timeline queries
+    elif any(word in query_lower for word in ["timeline", "history", "chronological", "when", "evolution"]):
+        return "timeline"
+    
+    # Author analysis
+    elif any(word in query_lower for word in ["who", "author", "contributor", "developer"]):
+        return "author_analysis"
+    
+    return "general"
+
+async def generate_enhanced_repository_summary(events: List[Dict], query: str) -> str:
+    """Enhanced repository summary with comprehensive analysis"""
+    if not events:
+        return "No repository data available for summary."
+    
+    # Extract repository info
+    repo_path = events[0].get("repository", "unknown")
+    repo_name = repo_path.split('\\')[-1] if '\\' in repo_path else repo_path.split('/')[-1]
+    
+    # Comprehensive statistics
+    stats = analyze_comprehensive_stats(events)
+    
+    # Build enhanced summary
+    summary = f"""# {repo_name} - Repository Analysis
+
+## 📊 Overview
+**Total Commits:** {stats['total_commits']}
+**Active Contributors:** {stats['contributors']}
+**Files Modified:** {stats['files_touched']}
+**Development Period:** {stats['date_range']}
+**Primary Language:** {stats['primary_language']}
+
+## 🏗️ Development Activity
+{format_commit_breakdown(stats['commit_breakdown'])}
+
+## 🔥 Recent Activity ({len(events[:10])} latest commits)
+{format_recent_commits(events[:10])}
+
+## 👥 Top Contributors
+{format_top_contributors(stats['author_stats'])}
+
+## 🎯 Development Focus
+{analyze_development_focus(events)}
+"""
+    
+    # Add LLM insights if available
+    if len(events) >= 5:
+        llm_insights = await get_llm_repository_insights(events[:20], repo_name)
+        if llm_insights:
+            summary += f"\n## 🤖 AI Insights\n{llm_insights}"
+    
+    return summary
+
+async def list_all_commits(events: List[Dict], query: str) -> str:
+    """List all commits with enhanced formatting"""
+    if not events:
+        return "No commits found."
+    
+    # Check if user wants a specific number
+    limit = extract_number_from_query(query) or 20
+    limited_events = events[:limit]
+    
+    commit_list = f"# All Commits ({len(limited_events)} shown)\n\n"
+    
+    for i, event in enumerate(limited_events, 1):
+        commit_hash = event.get('commit_hash', 'unknown')[:8]
+        message = event.get('message', 'No message')
+        author = event.get('author', 'Unknown').split('<')[0].strip()
+        timestamp = format_timestamp(event.get('timestamp', ''))
+        files_count = len(event.get('files_changed', []))
+        
+        commit_list += f"**{i}. [{commit_hash}]** {message}\n"
+        commit_list += f"   👤 {author} • 📅 {timestamp} • 📁 {files_count} files\n\n"
+    
+    if len(events) > limit:
+        commit_list += f"\n*Showing {limit} of {len(events)} total commits*\n"
+    
+    return commit_list
+
+async def analyze_specific_commit(events: List[Dict], query: str) -> str:
+    """Analyze a specific commit with detailed explanation"""
+    # Try to extract commit hash from query
+    commit_hash = extract_commit_hash(query)
+    
+    target_commit = None
+    if commit_hash:
+        # Find by hash
+        for event in events:
+            if event.get('commit_hash', '').startswith(commit_hash):
+                target_commit = event
+                break
+    else:
+        # Use the most relevant commit (first in results)
+        target_commit = events[0] if events else None
+    
+    if not target_commit:
+        return "Could not find the specified commit."
+    
+    return await generate_detailed_commit_analysis(target_commit, events)
+
+async def generate_detailed_commit_analysis(commit: Dict, all_events: List[Dict]) -> str:
+    """Generate comprehensive commit analysis"""
+    commit_hash = commit.get('commit_hash', 'unknown')
+    message = commit.get('message', 'No message')
+    author = commit.get('author', 'Unknown')
+    timestamp = commit.get('timestamp', '')
+    files_changed = commit.get('files_changed', [])
+    
+    analysis = f"""# Commit Analysis: {commit_hash[:8]}
+
+## 📋 Basic Information
+**Message:** {message}
+**Author:** {author}
+**Date:** {format_timestamp(timestamp)}
+**Files Modified:** {len(files_changed)} files
+
+## 📁 Files Changed
+{format_files_changed(files_changed)}
+
+## 🔍 Commit Context
+{await analyze_commit_context(commit, all_events)}
+
+## 🎯 Change Analysis
+{classify_commit_impact(commit)}
+"""
+    
+    # Add LLM explanation if available
+    llm_explanation = await get_llm_commit_explanation(commit)
+    if llm_explanation:
+        analysis += f"\n## 🤖 Detailed Explanation\n{llm_explanation}"
+    
+    return analysis
+
+async def get_llm_commit_explanation(commit: Dict) -> str:
+    """Get LLM explanation for a specific commit"""
+    commit_hash = commit.get('commit_hash', 'unknown')[:8]
+    message = commit.get('message', '')
+    files = commit.get('files_changed', [])[:10]  # Limit files
+    author = commit.get('author', 'Unknown')
+    
+    prompt = f"""Analyze this git commit in detail:
+
+Commit: {commit_hash}
+Message: {message}
+Author: {author}
+Files changed: {', '.join(files)}
+
+Please explain:
+1. What this commit does (technical details)
+2. Why this change was likely needed
+3. The impact of these changes
+4. Any patterns or development practices shown
+
+Provide a clear, technical explanation suitable for developers."""
+    
+    return await query_llm(prompt)
+
+async def query_enhanced_llm(query: str, events: List[Dict]) -> str:
+    """Enhanced LLM query with better context"""
+    if not events:
+        return ""
+    
+    # Build rich context
+    context = build_rich_context(events[:15], query)
+    
+    prompt = f"""You are analyzing a git repository. Here's the commit data:
 
 {context}
 
-Provide a detailed, technical answer that explains what changed, why it matters, and any patterns you notice."""
+User Question: {query}
+
+Please provide a comprehensive answer that:
+1. Directly addresses the user's question
+2. Uses specific commit information from the data above
+3. Explains technical details clearly
+4. Provides actionable insights
+
+Be specific and use actual commit hashes, author names, and file names from the data."""
     
-    logger.info(f"Calling LLM with prompt length: {len(prompt)}")
-    llm_response = await query_llm(prompt)
+    return await query_llm(prompt)
+
+def build_rich_context(events: List[Dict], query: str) -> str:
+    """Build rich context for LLM queries"""
+    context = ""
     
-    if llm_response:
-        logger.info(f"LLM responded with {len(llm_response)} characters")
-        return llm_response
+    for i, event in enumerate(events, 1):
+        commit_hash = event.get('commit_hash', 'unknown')[:8]
+        message = event.get('message', '')
+        author = event.get('author', 'Unknown').split('<')[0].strip()
+        timestamp = event.get('timestamp', '')[:10]
+        files = event.get('files_changed', [])[:5]
+        
+        context += f"Commit {i}:\n"
+        context += f"  Hash: {commit_hash}\n"
+        context += f"  Message: {message}\n"
+        context += f"  Author: {author}\n"
+        context += f"  Date: {timestamp}\n"
+        context += f"  Files: {', '.join(files)}\n\n"
     
-    # Only use pattern matching as fallback
-    logger.info("LLM not available, using pattern-based fallback")
-    query_lower = query.lower()
+    return context
+
+def analyze_comprehensive_stats(events: List[Dict]) -> dict:
+    """Analyze comprehensive repository statistics"""
+    stats = {
+        'total_commits': len(events),
+        'contributors': len(set(e.get('author', '') for e in events)),
+        'files_touched': len(set(f for e in events for f in e.get('files_changed', []))),
+        'commit_breakdown': {},
+        'author_stats': {},
+        'primary_language': 'Unknown',
+        'date_range': 'Unknown'
+    }
     
-    # Your existing pattern matching code
-    if any(word in query_lower for word in ["overview", "summarize", "summary", "tell about", "describe", "what is"]):
-        logger.info("Detected summary request")
-        return await generate_repository_overview(events)
+    # Analyze commit types
+    commit_types = {
+        'Features': 0, 'Fixes': 0, 'Refactors': 0, 
+        'Documentation': 0, 'Tests': 0, 'Build': 0, 'Other': 0
+    }
     
-    # Check for timeline/history requests
-    elif any(word in query_lower for word in ["timeline", "history", "evolution", "progress"]):
-        return await generate_timeline_summary(events)
+    # Analyze authors
+    author_commits = {}
     
-    # Check for pattern analysis
-    elif any(word in query_lower for word in ["pattern", "trend", "focus", "activity"]):
-        return await analyze_development_patterns(events)
+    # Analyze file extensions for language detection
+    extensions = {}
     
-    # Check for specific analysis types
-    elif "why" in query_lower or "reason" in query_lower:
-        return await explain_development_decisions(events, query)
+    for event in events:
+        # Classify commit
+        message = event.get('message', '').lower()
+        if any(word in message for word in ['feat', 'add', 'implement', 'create', 'new']):
+            commit_types['Features'] += 1
+        elif any(word in message for word in ['fix', 'bug', 'patch', 'resolve']):
+            commit_types['Fixes'] += 1
+        elif any(word in message for word in ['refactor', 'improve', 'optimize']):
+            commit_types['Refactors'] += 1
+        elif any(word in message for word in ['doc', 'readme', 'comment']):
+            commit_types['Documentation'] += 1
+        elif any(word in message for word in ['test', 'spec']):
+            commit_types['Tests'] += 1
+        elif any(word in message for word in ['build', 'deps', 'version']):
+            commit_types['Build'] += 1
+        else:
+            commit_types['Other'] += 1
+        
+        # Count author commits
+        author = event.get('author', 'Unknown').split('<')[0].strip()
+        author_commits[author] = author_commits.get(author, 0) + 1
+        
+        # Analyze file extensions
+        for file in event.get('files_changed', []):
+            if '.' in file:
+                ext = file.split('.')[-1].lower()
+                extensions[ext] = extensions.get(ext, 0) + 1
     
-    elif "how" in query_lower:
-        return await explain_implementation_approach(events, query)
+    stats['commit_breakdown'] = commit_types
+    stats['author_stats'] = sorted(author_commits.items(), key=lambda x: x[1], reverse=True)
     
-    elif "what changed" in query_lower or "difference" in query_lower:
-        return await analyze_changes(events, query)
+    # Determine primary language
+    if extensions:
+        primary_ext = max(extensions.items(), key=lambda x: x[1])[0]
+        lang_map = {
+            'py': 'Python', 'js': 'JavaScript', 'ts': 'TypeScript',
+            'java': 'Java', 'cpp': 'C++', 'cs': 'C#', 'go': 'Go',
+            'rs': 'Rust', 'rb': 'Ruby', 'php': 'PHP'
+        }
+        stats['primary_language'] = lang_map.get(primary_ext, primary_ext.upper())
     
+    # Date range
+    if events:
+        timestamps = [e.get('timestamp', '') for e in events if e.get('timestamp')]
+        if timestamps:
+            timestamps.sort()
+            first = timestamps[-1][:10] if timestamps else ''
+            last = timestamps[0][:10] if timestamps else ''
+            stats['date_range'] = f"{first} to {last}"
     
-    # Default fallback
-    return f"Found {len(events)} relevant commits:\n" + \
-           "\n".join(f"- {e.get('message', '')[:80]}" for e in events[:5])
+    return stats
+
+def format_commit_breakdown(breakdown: dict) -> str:
+    """Format commit breakdown for display"""
+    total = sum(breakdown.values())
+    if total == 0:
+        return "No commits to analyze"
     
-    # # Default: provide intelligent listing with context
-    # return await generate_contextual_listing(query, events)
+    result = ""
+    for commit_type, count in breakdown.items():
+        if count > 0:
+            percentage = (count * 100) // total
+            emoji_map = {
+                'Features': '🚀', 'Fixes': '🐛', 'Refactors': '🔧',
+                'Documentation': '📚', 'Tests': '🧪', 'Build': '📦', 'Other': '📝'
+            }
+            emoji = emoji_map.get(commit_type, '📝')
+            result += f"{emoji} **{commit_type}:** {count} commits ({percentage}%)\n"
+    
+    return result
+
+def format_recent_commits(events: List[Dict]) -> str:
+    """Format recent commits for display"""
+    if not events:
+        return "No recent commits"
+    
+    result = ""
+    for event in events:
+        commit_hash = event.get('commit_hash', 'unknown')[:8]
+        message = event.get('message', '')[:60]
+        author = event.get('author', 'Unknown').split('<')[0].strip()
+        timestamp = format_timestamp(event.get('timestamp', ''))
+        
+        result += f"• **[{commit_hash}]** {message}\n"
+        result += f"  👤 {author} • 📅 {timestamp}\n\n"
+    
+    return result
+
+def format_top_contributors(author_stats: List[tuple]) -> str:
+    """Format top contributors"""
+    if not author_stats:
+        return "No contributor data"
+    
+    result = ""
+    for i, (author, commits) in enumerate(author_stats[:5], 1):
+        result += f"{i}. **{author}** - {commits} commits\n"
+    
+    return result
+
+def analyze_development_focus(events: List[Dict]) -> str:
+    """Analyze current development focus"""
+    if not events:
+        return "No data to analyze"
+    
+    recent_events = events[:10]
+    focus_areas = {}
+    
+    for event in recent_events:
+        message = event.get('message', '').lower()
+        if 'fix' in message:
+            focus_areas['Bug Fixing'] = focus_areas.get('Bug Fixing', 0) + 1
+        if any(word in message for word in ['feat', 'add', 'new']):
+            focus_areas['Feature Development'] = focus_areas.get('Feature Development', 0) + 1
+        if 'refactor' in message:
+            focus_areas['Code Refactoring'] = focus_areas.get('Code Refactoring', 0) + 1
+        if any(word in message for word in ['doc', 'readme']):
+            focus_areas['Documentation'] = focus_areas.get('Documentation', 0) + 1
+    
+    if not focus_areas:
+        return "Mixed development activities"
+    
+    top_focus = max(focus_areas.items(), key=lambda x: x[1])
+    result = f"**Primary Focus:** {top_focus[0]}\n"
+    
+    if len(focus_areas) > 1:
+        result += "**Other Activities:** " + ", ".join([area for area, _ in focus_areas.items() if area != top_focus[0]])
+    
+    return result
+
+async def get_llm_repository_insights(events: List[Dict], repo_name: str) -> str:
+    """Get LLM insights about the repository"""
+    recent_commits = events[:10]
+    context = ""
+    
+    for event in recent_commits:
+        context += f"- {event.get('message', '')}\n"
+    
+    prompt = f"""Analyze this repository "{repo_name}" based on recent commits:
+
+{context}
+
+Provide 3-4 key insights about:
+1. Code quality and development practices
+2. Project direction and priorities  
+3. Team collaboration patterns
+4. Technical debt or areas for improvement
+
+Keep insights concise and actionable."""
+    
+    return await query_llm(prompt)
+
+# Helper functions
+
+def extract_commit_hash(query: str) -> str:
+    """Extract commit hash from query"""
+    import re
+    # Look for hexadecimal strings that could be commit hashes
+    matches = re.findall(r'\b[a-fA-F0-9]{6,40}\b', query)
+    return matches[0] if matches else ""
+
+def extract_number_from_query(query: str) -> int:
+    """Extract number from query (e.g., 'show 10 commits')"""
+    import re
+    numbers = re.findall(r'\b(\d+)\b', query)
+    return int(numbers[0]) if numbers else 0
+
+def format_timestamp(timestamp: str) -> str:
+    """Format timestamp for display"""
+    if not timestamp:
+        return "Unknown"
+    try:
+        from datetime import datetime
+        dt = datetime.fromisoformat(timestamp.replace('Z', '+00:00'))
+        return dt.strftime("%Y-%m-%d %H:%M")
+    except:
+        return timestamp[:16] if len(timestamp) > 16 else timestamp
+
+def format_files_changed(files: List[str]) -> str:
+    """Format files changed for display"""
+    if not files:
+        return "No files specified"
+    
+    if len(files) <= 10:
+        return "\n".join(f"• {file}" for file in files)
+    else:
+        result = "\n".join(f"• {file}" for file in files[:10])
+        result += f"\n• ... and {len(files) - 10} more files"
+        return result
+
+async def analyze_commit_context(commit: Dict, all_events: List[Dict]) -> str:
+    """Analyze commit in context of surrounding commits"""
+    commit_hash = commit.get('commit_hash', '')
+    
+    # Find position in timeline
+    commit_index = -1
+    for i, event in enumerate(all_events):
+        if event.get('commit_hash') == commit_hash:
+            commit_index = i
+            break
+    
+    if commit_index == -1:
+        return "Could not determine commit context"
+    
+    context = ""
+    
+    # Previous commit
+    if commit_index < len(all_events) - 1:
+        prev_commit = all_events[commit_index + 1]
+        context += f"**Previous:** [{prev_commit.get('commit_hash', '')[:8]}] {prev_commit.get('message', '')[:50]}\n"
+    
+    # Next commit
+    if commit_index > 0:
+        next_commit = all_events[commit_index - 1]
+        context += f"**Following:** [{next_commit.get('commit_hash', '')[:8]}] {next_commit.get('message', '')[:50]}\n"
+    
+    return context if context else "This is an isolated commit"
+
+def classify_commit_impact(commit: Dict) -> str:
+    """Classify the impact and type of commit"""
+    message = commit.get('message', '').lower()
+    files_count = len(commit.get('files_changed', []))
+    
+    # Determine impact level
+    if files_count > 10:
+        impact = "High Impact (10+ files changed)"
+    elif files_count > 3:
+        impact = "Medium Impact (3-10 files changed)"
+    else:
+        impact = "Low Impact (1-3 files changed)"
+    
+    # Determine change type
+    change_type = "General Change"
+    if any(word in message for word in ['feat', 'add', 'new', 'implement']):
+        change_type = "Feature Addition"
+    elif any(word in message for word in ['fix', 'bug', 'patch']):
+        change_type = "Bug Fix"
+    elif any(word in message for word in ['refactor', 'improve', 'optimize']):
+        change_type = "Code Refactoring"
+    elif any(word in message for word in ['doc', 'readme']):
+        change_type = "Documentation Update"
+    elif any(word in message for word in ['test', 'spec']):
+        change_type = "Test Addition/Update"
+    
+    return f"**Impact:** {impact}\n**Type:** {change_type}"
 
 async def generate_repository_overview(events: List[Dict]) -> str:
     """Generate comprehensive overview for any repository"""
@@ -947,15 +1407,66 @@ async def clear_all_repositories():
 
 @app.delete("/api/repositories/{repo_path:path}")
 async def delete_repository(repo_path: str):
-    """Delete a specific repository"""
+    """Delete a specific repository and all its commits"""
     global indexed_repositories
     
-    if repo_path in indexed_repositories:
+    if repo_path not in indexed_repositories:
+        raise HTTPException(status_code=404, detail="Repository not found")
+    
+    try:
+        # First, remove all commits for this repository from Qdrant
+        if qdrant_client:
+            logger.info(f"Removing all commits for repository: {repo_path}")
+            
+            # Get all commit IDs for this repository
+            commit_ids_to_delete = []
+            offset = None
+            
+            while True:
+                results = qdrant_client.scroll(
+                    collection_name=events_collection,
+                    scroll_filter={
+                        "must": [{"key": "repository", "match": {"value": repo_path}}]
+                    },
+                    limit=100,
+                    offset=offset,
+                    with_payload=False,
+                    with_vectors=False
+                )
+                points, next_offset = results
+                
+                for point in points:
+                    commit_ids_to_delete.append(point.id)
+                
+                if next_offset is None:
+                    break
+                offset = next_offset
+            
+            # Delete all commits for this repository
+            if commit_ids_to_delete:
+                qdrant_client.delete(
+                    collection_name=events_collection,
+                    points_selector=commit_ids_to_delete
+                )
+                logger.info(f"Deleted {len(commit_ids_to_delete)} commits from Qdrant")
+        
+        # Remove from in-memory storage
+        global git_events
+        git_events = [e for e in git_events if e.get("repository") != repo_path]
+        
+        # Remove from repository tracking
         del indexed_repositories[repo_path]
         save_repositories()
-        return {"status": "success", "message": f"Repository {repo_path} deleted"}
-    else:
-        raise HTTPException(status_code=404, detail="Repository not found")
+        
+        return {
+            "status": "success", 
+            "message": f"Repository {repo_path} and all its commits deleted successfully",
+            "commits_deleted": len(commit_ids_to_delete) if qdrant_client else 0
+        }
+        
+    except Exception as e:
+        logger.error(f"Error deleting repository {repo_path}: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to delete repository: {e}")
 
 @app.post("/api/analyze/commit")
 async def analyze_commit(request: dict):
@@ -1550,6 +2061,149 @@ async def cleanup_bad_entries():
         "removed": removed_count,
         "message": f"Removed {removed_count} entries without commit hashes"
     }
+
+@app.get("/api/commits/{commit_hash}")
+async def get_commit_details(commit_hash: str):
+    """Get detailed information about a specific commit"""
+    if not commit_hash or len(commit_hash) < 6:
+        raise HTTPException(status_code=400, detail="Invalid commit hash")
+    
+    # Search for the commit in memory first
+    target_commit = None
+    for event in git_events:
+        if event.get('commit_hash', '').startswith(commit_hash):
+            target_commit = event
+            break
+    
+    # If not found in memory, search in Qdrant
+    if not target_commit and qdrant_client:
+        try:
+            results = qdrant_client.scroll(
+                collection_name=events_collection,
+                scroll_filter={
+                    "should": [
+                        {"key": "commit_hash", "match": {"value": commit_hash}},
+                        {"key": "commit_hash", "match": {"text": commit_hash}}
+                    ]
+                },
+                limit=1,
+                with_payload=True,
+                with_vectors=False
+            )[0]
+            
+            if results:
+                target_commit = results[0].payload
+        except Exception as e:
+            logger.error(f"Error searching Qdrant for commit: {e}")
+    
+    if not target_commit:
+        raise HTTPException(status_code=404, detail=f"Commit {commit_hash} not found")
+    
+    # Get repository context (other commits from same repo)
+    repo_path = target_commit.get('repository', '')
+    repo_commits = []
+    if repo_path:
+        repo_commits = [e for e in git_events if e.get('repository') == repo_path][:50]
+    
+    # Generate detailed analysis
+    analysis = await generate_detailed_commit_analysis(target_commit, repo_commits)
+    
+    return {
+        "commit": target_commit,
+        "analysis": analysis,
+        "repository": repo_path,
+        "context_commits": len(repo_commits)
+    }
+
+@app.post("/api/commits/compare")
+async def compare_commits(request: dict):
+    """Compare two commits"""
+    commit_hash_1 = request.get("commit_1")
+    commit_hash_2 = request.get("commit_2")
+    
+    if not commit_hash_1 or not commit_hash_2:
+        raise HTTPException(status_code=400, detail="Both commit hashes required")
+    
+    # Find both commits
+    commits = []
+    for hash_val in [commit_hash_1, commit_hash_2]:
+        commit = None
+        for event in git_events:
+            if event.get('commit_hash', '').startswith(hash_val):
+                commit = event
+                break
+        
+        if not commit:
+            raise HTTPException(status_code=404, detail=f"Commit {hash_val} not found")
+        commits.append(commit)
+    
+    # Generate comparison
+    comparison = await generate_commit_comparison(commits[0], commits[1])
+    
+    return {
+        "commit_1": commits[0],
+        "commit_2": commits[1],
+        "comparison": comparison
+    }
+
+async def generate_commit_comparison(commit1: Dict, commit2: Dict) -> str:
+    """Generate detailed comparison between two commits"""
+    hash1 = commit1.get('commit_hash', '')[:8]
+    hash2 = commit2.get('commit_hash', '')[:8]
+    
+    comparison = f"""# Commit Comparison: {hash1} vs {hash2}
+
+## Basic Information
+**Commit 1:** [{hash1}] {commit1.get('message', '')}
+**Author:** {commit1.get('author', '')}
+**Date:** {format_timestamp(commit1.get('timestamp', ''))}
+
+**Commit 2:** [{hash2}] {commit2.get('message', '')}
+**Author:** {commit2.get('author', '')}
+**Date:** {format_timestamp(commit2.get('timestamp', ''))}
+
+## File Changes Comparison
+**Commit 1 Files:** {len(commit1.get('files_changed', []))} files
+{format_files_changed(commit1.get('files_changed', [])[:5])}
+
+**Commit 2 Files:** {len(commit2.get('files_changed', []))} files
+{format_files_changed(commit2.get('files_changed', [])[:5])}
+
+## Impact Analysis
+**Commit 1:** {classify_commit_impact(commit1)}
+**Commit 2:** {classify_commit_impact(commit2)}
+"""
+    
+    # Add LLM comparison if available
+    llm_comparison = await get_llm_commit_comparison(commit1, commit2)
+    if llm_comparison:
+        comparison += f"\n## Detailed Comparison\n{llm_comparison}"
+    
+    return comparison
+
+async def get_llm_commit_comparison(commit1: Dict, commit2: Dict) -> str:
+    """Get LLM comparison between two commits"""
+    prompt = f"""Compare these two git commits in detail:
+
+Commit 1: {commit1.get('commit_hash', '')[:8]}
+Message: {commit1.get('message', '')}
+Files: {', '.join(commit1.get('files_changed', [])[:5])}
+Author: {commit1.get('author', '')}
+
+Commit 2: {commit2.get('commit_hash', '')[:8]}
+Message: {commit2.get('message', '')}
+Files: {', '.join(commit2.get('files_changed', [])[:5])}
+Author: {commit2.get('author', '')}
+
+Please analyze:
+1. What are the key differences between these commits?
+2. How do they relate to each other (if at all)?
+3. Which commit has a bigger impact and why?
+4. What development patterns do they show?
+
+Provide a detailed technical comparison."""
+    
+    return await query_llm(prompt)
 
 @app.get("/api/commits/indexed")
 async def get_indexed_commits():
