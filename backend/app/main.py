@@ -321,7 +321,7 @@ async def search_similar(query: str, limit: int = 10, repository: str = None, br
         logger.error(f"Search failed: {e}")
         return []
     
-async def search_similar_with_temporal_priority(query: str, limit: int = 10, repository: str = None, temporal_priority: bool = False) -> List[Dict[str, Any]]:
+async def search_similar_with_temporal_priority(query: str, limit: int = 10, repository: str = None, temporal_priority: bool = False, branch_filter: dict = None) -> List[Dict[str, Any]]:
     """Enhanced search with option for temporal priority"""
     
     if temporal_priority:
@@ -331,6 +331,18 @@ async def search_similar_with_temporal_priority(query: str, limit: int = 10, rep
             filtered_events = git_events
             if repository:
                 filtered_events = [e for e in git_events if repository in e.get("repository", "")]
+            # Apply branch filter if specified
+            if branch_filter and 'should' in branch_filter:
+                target_branches = []
+                for condition in branch_filter['should']:
+                    if 'match' in condition and 'value' in condition['match']:
+                        target_branches.append(condition['match']['value'])
+                
+                filtered_events = [
+                    e for e in filtered_events 
+                    if (e.get('primary_branch') in target_branches or 
+                        any(branch in target_branches for branch in e.get('all_branches', [])))
+                ]
             
             # Sort by timestamp (newest first)
             sorted_events = sorted(filtered_events, key=lambda x: x.get('timestamp', ''), reverse=True)
@@ -338,13 +350,24 @@ async def search_similar_with_temporal_priority(query: str, limit: int = 10, rep
         
         # Use semantic search but re-sort by timestamp
         semantic_results = await search_similar(query, limit * 2, repository)  # Get more results
-        
+        # Apply branch filter to semantic results
+        if branch_filter and 'should' in branch_filter:
+            target_branches = []
+            for condition in branch_filter['should']:
+                if 'match' in condition and 'value' in condition['match']:
+                    target_branches.append(condition['match']['value'])
+            
+            semantic_results = [
+                e for e in semantic_results 
+                if (e.get('primary_branch') in target_branches or 
+                    any(branch in target_branches for branch in e.get('all_branches', [])))
+            ]
         # Sort by timestamp and take top results
         temporal_results = sorted(semantic_results, key=lambda x: x.get('timestamp', ''), reverse=True)
         return temporal_results[:limit]
     else:
         # Use regular semantic search
-        return await search_similar(query, limit, repository)
+        return await search_with_filters(query, limit, repository, branch_filter, temporal_priority=False)
     
 async def generate_intelligent_answer(query: str, events: List[Dict]) -> str:
     """Enhanced intelligent answer generation with better commit handling"""
@@ -2094,13 +2117,13 @@ async def query_context(request: QueryRequest):
                 ]
             }
         # Get relevant events with temporal priority if needed
-        if is_temporal_query:
+        if is_temporal_query or branch_filter:
             similar_events = await search_similar_with_temporal_priority(
                 query, 
                 request.limit * 2, 
                 repository,
                 branch_filter=branch_filter,
-                temporal_priority=True
+                temporal_priority=is_temporal_query
             )
         else:
             limit = 50 if "summar" in query.lower() else request.limit * 2
