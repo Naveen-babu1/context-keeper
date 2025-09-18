@@ -134,6 +134,7 @@ class QueryRequest(BaseModel):
     query: str
     limit: Optional[int] = 10
     repository: Optional[str] = None 
+    branches: Optional[List[str]] = None
     include_graph: Optional[bool] = False
 
 class QueryResponse(BaseModel):
@@ -251,41 +252,71 @@ async def store_in_qdrant(event: Dict[str, Any], event_id: str):
         logger.error(f"Failed to store in Qdrant: {e}")
         return False
 
-async def search_similar(query: str, limit: int = 10, repository: str = None) -> List[Dict[str, Any]]:
+async def search_similar(query: str, limit: int = 10, repository: str = None, branch_filter: dict = None, temporal_priority: bool = False) -> List[Dict[str, Any]]:
     if not qdrant_client or not embedding_model:
-        return []
+        # Fallback to in-memory search
+        filtered_events = git_events
+        
+        if repository:
+            filtered_events = [e for e in filtered_events if e.get("repository") == repository]
+        
+        if branch_filter and 'should' in branch_filter:
+            # Extract branch names from filter
+            target_branches = []
+            for condition in branch_filter['should']:
+                if 'match' in condition and 'value' in condition['match']:
+                    target_branches.append(condition['match']['value'])
+            
+            filtered_events = [
+                e for e in filtered_events 
+                if (e.get('primary_branch') in target_branches or 
+                    any(branch in target_branches for branch in e.get('all_branches', [])))
+            ]
+        
+        if temporal_priority:
+            filtered_events = sorted(filtered_events, key=lambda x: x.get('timestamp', ''), reverse=True)
+        
+        return filtered_events[:limit]
     
     try:
         query_embedding = create_embedding(query)
-        # Build filter for repository if specified
+        # Combine repository and branch filters
         search_filter = None
+        filter_conditions = []
+        
         if repository:
-            normalized_repo = str(Path(repository).resolve())
-            search_filter = {
-                "must": [
-                    {
-                        "key": "repository",
-                        "match": {"value": repository}
-                    }
-                ]
-            }
+            filter_conditions.append({"key": "repository", "match": {"value": repository}})
+        
+        if branch_filter:
+            filter_conditions.extend(branch_filter['should'])
+        
+        if filter_conditions:
+            search_filter = {"should": filter_conditions} if len(filter_conditions) > 1 else {"must": filter_conditions}
+        
         results = qdrant_client.search(
             collection_name=events_collection,
             query_vector=query_embedding,
-            query_filter=None,
+            query_filter=search_filter,
             limit=limit
         )
         
-        # Remove duplicates based on message content
-        seen = set()
-        unique_results = []
-        for hit in results:
-            msg = hit.payload.get('message', '')
-            if msg not in seen:
-                seen.add(msg)
-                unique_results.append(hit.payload)
+        # Extract payloads
+        events = [hit.payload for hit in results]
         
-        return unique_results
+        # Apply temporal sorting if requested
+        if temporal_priority:
+            events = sorted(events, key=lambda x: x.get('timestamp', ''), reverse=True)
+        
+        # Remove duplicates based on commit hash
+        seen = set()
+        unique_events = []
+        for event in events:
+            commit_hash = event.get('commit_hash', '')
+            if commit_hash not in seen:
+                seen.add(commit_hash)
+                unique_events.append(event)
+        
+        return unique_events
     except Exception as e:
         logger.error(f"Search failed: {e}")
         return []
@@ -888,6 +919,22 @@ Keep insights concise and actionable."""
     return await query_llm(prompt)
 
 # Helper functions
+
+def classify_commit_type(message: str) -> str:
+    """Classify the type of commit based on its message."""
+    message = message.lower()
+    if any(keyword in message for keyword in ["feat", "feature", "add", "new"]):
+        return "Feature"
+    elif any(keyword in message for keyword in ["fix", "bug", "patch", "resolve"]):
+        return "Bug Fix"
+    elif any(keyword in message for keyword in ["refactor", "improve", "optimize"]):
+        return "Refactor"
+    elif any(keyword in message for keyword in ["doc", "readme", "comment"]):
+        return "Documentation"
+    elif any(keyword in message for keyword in ["test", "spec"]):
+        return "Test"
+    else:
+        return "Other"
 
 def extract_commit_hash(query: str) -> str:
     """Extract commit hash from query"""
@@ -1545,6 +1592,80 @@ async def check_repository_status(request: dict):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error checking repository: {e}")
 
+@app.post("/api/ingest/multi-branch")
+async def start_multi_branch_ingestion(request: dict):
+    """Start ingesting a repository with multi-branch support"""
+    repo_path = request.get("repo_path")
+    branches = request.get("branches")  # Specific branches
+    all_branches = request.get("all_branches", False)  # All branches flag
+    active_branches = request.get("active_branches", False)  # Active branches only
+    days = request.get("days", 30)  # Days for active branch detection
+    
+    if not repo_path:
+        raise HTTPException(status_code=400, detail="repo_path required")
+    
+    # Normalize the path
+    normalized_path = normalize_repo_path(repo_path)
+    
+    # Track repository
+    if normalized_path not in indexed_repositories:
+        indexed_repositories[normalized_path] = {
+            "path": normalized_path,
+            "first_indexed": datetime.now().isoformat(),
+            "last_updated": datetime.now().isoformat(),
+            "commit_count": 0,
+            "selected": True
+        }
+        save_repositories()
+    
+    # Build command for multi-branch collector
+    import subprocess
+    import threading
+    
+    def run_multi_branch_collector():
+        try:
+            collector_path = "D:/projects/context-keeper/collectors/git/git_collector.py"  # Update path as needed
+            
+            cmd = [
+                "python", collector_path,
+                "--repo", repo_path,
+                "--api-url", "http://localhost:8000",
+                "--skip-duplicates"
+            ]
+            
+            if all_branches:
+                cmd.append("--all-branches")
+            elif active_branches:
+                cmd.extend(["--active-branches", "--days", str(days)])
+            elif branches:
+                cmd.extend(["--branches", ",".join(branches)])
+            
+            subprocess.run(cmd)
+            
+            ingestion_status["is_ingesting"] = False
+            ingestion_status["last_ingested"] = datetime.now().isoformat()
+            save_repositories()
+            
+        except Exception as e:
+            ingestion_status["is_ingesting"] = False
+            ingestion_status["error"] = str(e)
+            logger.error(f"Multi-branch ingestion error: {e}")
+    
+    # Update ingestion status
+    ingestion_status["is_ingesting"] = True
+    ingestion_status["current_repo"] = repo_path
+    
+    # Start background thread
+    thread = threading.Thread(target=run_multi_branch_collector)
+    thread.start()
+    
+    return {
+        "status": "started",
+        "repo": repo_path,
+        "branches": branches,
+        "all_branches": all_branches,
+        "active_branches": active_branches
+    }
 @app.post("/api/repositories/select")
 async def select_repository(request: dict):
     """Mark a repository as selected for queries"""
@@ -1637,6 +1758,124 @@ async def delete_repository(repo_path: str):
     except Exception as e:
         logger.error(f"Error deleting repository {repo_path}: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to delete repository: {e}")
+
+@app.get("/api/repositories/{repo_path:path}/branches")
+async def get_repository_branches(repo_path: str):
+    """Get branches for a specific repository"""
+    branch_stats = {}
+    
+    if qdrant_client:
+        try:
+            # Get all commits for this repository
+            all_points = []
+            offset = None
+            
+            while True:
+                results = qdrant_client.scroll(
+                    collection_name=events_collection,
+                    scroll_filter={"must": [{"key": "repository", "match": {"value": repo_path}}]},
+                    limit=100,
+                    offset=offset,
+                    with_payload=True,
+                    with_vectors=False
+                )
+                points, next_offset = results
+                all_points.extend(points)
+                
+                if next_offset is None:
+                    break
+                offset = next_offset
+            
+            # Analyze branch data from commits
+            for point in all_points:
+                payload = point.payload
+                
+                # Get branches from commit data
+                all_branches = payload.get('all_branches', [])
+                primary_branch = payload.get('primary_branch') or payload.get('branch', 'unknown')
+                
+                # If no all_branches data, use primary/current branch
+                if not all_branches:
+                    all_branches = [primary_branch]
+                
+                for branch in all_branches:
+                    if branch and branch != 'unknown':
+                        if branch not in branch_stats:
+                            branch_stats[branch] = {
+                                'name': branch,
+                                'commit_count': 0,
+                                'last_commit_date': '',
+                                'branch_type': classify_branch_type(branch)
+                            }
+                        
+                        branch_stats[branch]['commit_count'] += 1
+                        
+                        # Update last commit date
+                        commit_date = payload.get('timestamp', '')
+                        if commit_date > branch_stats[branch]['last_commit_date']:
+                            branch_stats[branch]['last_commit_date'] = commit_date
+                            
+        except Exception as e:
+            logger.error(f"Error getting branch stats: {e}")
+    
+    # If no data from Qdrant, try to get from in-memory
+    if not branch_stats:
+        for event in git_events:
+            if event.get('repository') == repo_path:
+                branches = event.get('all_branches', [event.get('branch', 'unknown')])
+                for branch in branches:
+                    if branch and branch != 'unknown':
+                        if branch not in branch_stats:
+                            branch_stats[branch] = {
+                                'name': branch,
+                                'commit_count': 0,
+                                'last_commit_date': '',
+                                'branch_type': classify_branch_type(branch)
+                            }
+                        branch_stats[branch]['commit_count'] += 1
+                        commit_date = event.get('timestamp', '')
+                        if commit_date > branch_stats[branch]['last_commit_date']:
+                            branch_stats[branch]['last_commit_date'] = commit_date
+    
+    # Sort branches by importance and activity
+    sorted_branches = sorted(
+        branch_stats.values(), 
+        key=lambda x: (
+            x['branch_type'] == 'main',  # Main branches first
+            x['branch_type'] == 'develop',  # Then develop
+            x['commit_count']  # Then by activity
+        ), 
+        reverse=True
+    )
+    
+    return {
+        "repository": repo_path,
+        "branches": sorted_branches,
+        "total_branches": len(sorted_branches)
+    }
+
+def classify_branch_type(branch_name: str) -> str:
+    """Classify branch type for UI display"""
+    if not branch_name:
+        return 'other'
+        
+    branch_lower = branch_name.lower()
+    
+    if branch_lower in ['main', 'master']:
+        return 'main'
+    elif branch_lower in ['develop', 'dev', 'development']:
+        return 'develop'
+    elif branch_lower.startswith('feature/'):
+        return 'feature'
+    elif branch_lower.startswith('hotfix/'):
+        return 'hotfix'
+    elif branch_lower.startswith('release/'):
+        return 'release'
+    elif branch_lower.startswith('bugfix/'):
+        return 'feature'  # Treat bugfix as feature for UI
+    else:
+        return 'other'
+
 
 @app.post("/api/analyze/commit")
 async def analyze_commit(request: dict):
@@ -1835,22 +2074,37 @@ async def query_context(request: QueryRequest):
     """Enhanced query with code understanding"""
     try:
         query = request.query
-        logger.info(f"Query: {query}, Repository: {request.repository}")
+        repository = request.repository
+        branches = getattr(request, 'branches', None)
+        logger.info(f"Query: {query}, Repository: {request.repository}, Branches: {branches}")
         # Check if this is a temporal query
         temporal_keywords = ["latest", "recent", "newest", "last", "most recent", "show the latest"]
         is_temporal_query = any(keyword in query.lower() for keyword in temporal_keywords)
         
+        # Build search filter for branches if specified
+        branch_filter = None
+        if branches and len(branches) > 0:
+            branch_filter = {
+                "should": [
+                    {"key": "primary_branch", "match": {"value": branch}} 
+                    for branch in branches
+                ] + [
+                    {"key": "all_branches", "match": {"value": branch}} 
+                    for branch in branches
+                ]
+            }
         # Get relevant events with temporal priority if needed
         if is_temporal_query:
             similar_events = await search_similar_with_temporal_priority(
                 query, 
                 request.limit * 2, 
-                request.repository, 
+                repository,
+                branch_filter=branch_filter,
                 temporal_priority=True
             )
         else:
             limit = 50 if "summar" in query.lower() else request.limit * 2
-            similar_events = await search_similar(query, limit, request.repository)
+            similar_events = await search_similar(query, limit, repository)
         
         # Use the new generalized answer generation
         answer = await generate_intelligent_answer(query, similar_events)
@@ -1864,7 +2118,11 @@ async def query_context(request: QueryRequest):
                 "author": event.get("author", ""),
                 "commit": event.get("commit_hash", "")[:8] if event.get("commit_hash") else "",
                 "repository": event.get("repository", "unknown"),
-                "files_changed": event.get("files_changed", [])[:5],  # Add files
+                "files_changed": event.get("files_changed", [])[:5],
+                "primary_branch": event.get("primary_branch"),
+                "all_branches": event.get("all_branches", []),
+                "merge_commit": event.get("merge_commit", False),
+                "branch_context": event.get("branch_context"),  # Add files
                 "context": f"Commit {i+1} of {len(similar_events)}"
             })
         

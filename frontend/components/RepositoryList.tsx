@@ -122,6 +122,7 @@ export function RepositoryList({
             <GitBranch className="w-5 h-5 text-emerald-400" />
             Repositories
           </h3>
+          <div className="flex gap-2">
           <button
             onClick={handleCleanup}
             className="text-gray-400 hover:text-emerald-400 transition-colors"
@@ -136,6 +137,7 @@ export function RepositoryList({
           >
             <Trash2 className="w-4 h-4" />
           </button>
+          </div>
           {/* <button
             onClick={handleClearAll}
             className="text-gray-400 hover:text-red-400 transition-colors"
@@ -171,28 +173,64 @@ export function RepositoryList({
                     : "bg-gray-800/30 hover:bg-gray-800/50 border border-gray-700"
                 }`}
               >
-                <button
-                  onClick={() => onSelectRepo(isSelected ? null : path)}
-                  className="flex-1 text-left"
-                >
-                  <div
-                    className={`font-medium ${
-                      isSelected ? "text-emerald-400" : "text-gray-300"
-                    }`}
+                <div className="flex items-start justify-between">
+                  <button
+                    onClick={() => onSelectRepo(isSelected ? null : path)}
+                    className="flex-1 text-left"
                   >
-                    {repoName}
-                  </div>
-                  <div className="text-xs mt-1 opacity-70">
-                    {commitCount} commits
-                  </div>
-                </button>
+                    <div className="flex items-center gap-2 mb-2">
+                      <div
+                        className={`font-medium ${
+                          isSelected ? "text-emerald-400" : "text-gray-300"
+                        }`}
+                      >
+                        {repoName}
+                      </div>
+                      {repo.branch_count && repo.branch_count > 1 && (
+                        <span className="px-2 py-1 text-xs bg-blue-500/20 text-blue-400 rounded">
+                          {repo.branch_count} branches
+                        </span>
+                      )}
+                    </div>
+                    
+                    <div className="grid grid-cols-2 gap-2 text-xs text-gray-400">
+                      <div className="flex items-center gap-1">
+                        <span>{commitCount} commits</span>
+                      </div>
+                      {repo.last_updated && (
+                        <div className="flex items-center gap-1">
+                          <span>{new Date(repo.last_updated).toLocaleDateString()}</span>
+                        </div>
+                      )}
+                    </div>
 
-                <button
-                  onClick={() => handleDeleteClick(path)}
-                  className="opacity-0 group-hover:opacity-100 p-1 text-gray-400 hover:text-red-400 transition-all"
-                >
-                  <Trash2 className="w-4 h-4" />
-                </button>
+                    {/* Branch breakdown if available */}
+                    {repo.branch_stats && (
+                      <div className="mt-2 flex gap-2 text-xs">
+                        {repo.branch_stats.main_commits > 0 && (
+                          <div className="flex items-center gap-1">
+                            <div className="w-2 h-2 bg-green-400 rounded-full"></div>
+                            <span className="text-gray-400">Main: {repo.branch_stats.main_commits}</span>
+                          </div>
+                        )}
+                        {repo.branch_stats.feature_commits > 0 && (
+                          <div className="flex items-center gap-1">
+                            <div className="w-2 h-2 bg-purple-400 rounded-full"></div>
+                            <span className="text-gray-400">Features: {repo.branch_stats.feature_commits}</span>
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </button>
+
+                  <button
+                    onClick={() => handleDeleteClick(path)}
+                    className="opacity-0 group-hover:opacity-100 p-1 text-gray-400 hover:text-red-400 transition-all"
+                    disabled={isDeleting}
+                  >
+                    <Trash2 className="w-4 h-4" />
+                  </button>
+                </div>
               </div>
             );
           })}
@@ -212,6 +250,7 @@ export function RepositoryList({
         onClose={() => setShowAddModal(false)}
         onAdd={handleAddRepository}
       />
+
       <DeleteConfirmationModal
         isOpen={showDeleteModal}
         onClose={handleDeleteCancel}
